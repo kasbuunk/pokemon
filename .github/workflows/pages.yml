@@ -30,11 +30,6 @@ jobs:
       - name: Install trunk
         run: cargo binstall --no-confirm --force trunk@0.21.14
 
-      - name: Enable GitHub Pages
-        uses: actions/configure-pages@v5
-        with:
-          enablement: true
-
       - name: Build web app
         working-directory: crates/pksave-app
         run: trunk build --release --public-url /pokemon/
@@ -57,6 +52,22 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      # Best-effort enablement: a workflow GITHUB_TOKEN cannot create the
+      # Pages site (that needs repo-admin), so until Pages is enabled once
+      # in the repo settings this step fails — with the instruction below.
+      - name: Configure GitHub Pages
+        id: configure
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - name: Explain how to enable Pages (on failure)
+        if: failure()
+        run: |
+          echo '## GitHub Pages is not enabled for this repository' >> "$GITHUB_STEP_SUMMARY"
+          echo 'A workflow token cannot enable it. One-time manual step:' >> "$GITHUB_STEP_SUMMARY"
+          echo '**Settings → Pages → Build and deployment → Source: GitHub Actions**, then re-run this workflow.' >> "$GITHUB_STEP_SUMMARY"
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
