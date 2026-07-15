@@ -5,6 +5,12 @@
 //! `docs/FORMAT.md` ("Pokémon structures"); all multi-byte integers are
 //! big-endian. The level byte at `+0x03` is the *box* level — stale for
 //! party mons, whose authoritative level lives at `+0x21`.
+//!
+//! The field accessors live on sealed traits shared by the wrapper
+//! types: [`MonView`] (getters over the common 33 bytes), [`MonMut`]
+//! (the matching setters) and [`PartyMon`] (the party-only calculated
+//! fields). Party-only *setters* and the stat-recalculation helpers
+//! stay inherent on [`PartyMonMut`].
 
 use super::data::{BASE_STATS, INDEX_TO_DEX};
 use super::offsets;
@@ -41,9 +47,13 @@ mod off {
 /// Status-condition bit positions in the status byte (`+0x04`).
 /// Bits 0-2 hold the sleep-turn counter.
 pub const STATUS_SLEEP_MASK: u8 = 0b0000_0111;
+/// Status byte bit 3: poisoned (`PSN` in pokered).
 pub const STATUS_POISONED: u8 = 1 << 3;
+/// Status byte bit 4: burned (`BRN`).
 pub const STATUS_BURNED: u8 = 1 << 4;
+/// Status byte bit 5: frozen (`FRZ`).
 pub const STATUS_FROZEN: u8 = 1 << 5;
+/// Status byte bit 6: paralyzed (`PAR`).
 pub const STATUS_PARALYZED: u8 = 1 << 6;
 
 fn get_u16(bytes: &[u8], at: usize) -> u16 {
@@ -106,229 +116,305 @@ impl<'a> BoxMonMut<'a> {
     }
 }
 
+/// Sealing plumbing: raw byte access for the mon wrapper types.
+///
+/// The mon traits ([`MonView`], [`MonMut`], [`PartyMon`]) require these
+/// supertraits, and only this module's wrapper types implement them, so
+/// the traits cannot be implemented outside this module.
+mod sealed {
+    /// Read access to the raw record bytes.
+    pub trait Repr {
+        /// The raw record bytes.
+        fn raw(&self) -> &[u8];
+    }
+
+    /// Mutable access to the raw record bytes.
+    pub trait ReprMut: Repr {
+        /// The raw record bytes, mutably.
+        fn raw_mut(&mut self) -> &mut [u8];
+    }
+}
+
+impl sealed::Repr for PartyMonView<'_> {
+    fn raw(&self) -> &[u8] {
+        self.0
+    }
+}
+
+impl sealed::Repr for PartyMonMut<'_> {
+    fn raw(&self) -> &[u8] {
+        self.0
+    }
+}
+
+impl sealed::Repr for BoxMonView<'_> {
+    fn raw(&self) -> &[u8] {
+        self.0
+    }
+}
+
+impl sealed::Repr for BoxMonMut<'_> {
+    fn raw(&self) -> &[u8] {
+        self.0
+    }
+}
+
+impl sealed::ReprMut for PartyMonMut<'_> {
+    fn raw_mut(&mut self) -> &mut [u8] {
+        self.0
+    }
+}
+
+impl sealed::ReprMut for BoxMonMut<'_> {
+    fn raw_mut(&mut self) -> &mut [u8] {
+        self.0
+    }
+}
+
 /// Getters for the fields shared by party and box records (the first 33
 /// bytes).
-macro_rules! common_getters {
-    ($ty:ident) => {
-        impl<'a> $ty<'a> {
-            /// The raw record bytes.
-            pub fn as_bytes(&self) -> &[u8] {
-                &self.0
-            }
+///
+/// Implemented by all four mon views ([`PartyMonView`], [`PartyMonMut`],
+/// [`BoxMonView`], [`BoxMonMut`]); every method is provided. Sealed —
+/// the trait cannot be implemented outside this module.
+pub trait MonView: sealed::Repr {
+    /// The raw record bytes.
+    fn as_bytes(&self) -> &[u8] {
+        self.raw()
+    }
 
-            /// Species, as the *internal index* (not National Dex).
-            pub fn species(&self) -> u8 {
-                self.0[off::SPECIES]
-            }
+    /// Species, as the *internal index* (not National Dex).
+    fn species(&self) -> u8 {
+        self.raw()[off::SPECIES]
+    }
 
-            pub fn current_hp(&self) -> u16 {
-                get_u16(&self.0, off::CURRENT_HP)
-            }
+    /// Current HP.
+    fn current_hp(&self) -> u16 {
+        get_u16(self.raw(), off::CURRENT_HP)
+    }
 
-            /// The level byte at `+0x03`. For party mons this is the
-            /// stale box copy; the authoritative level is `level()`.
-            pub fn box_level(&self) -> u8 {
-                self.0[off::BOX_LEVEL]
-            }
+    /// The level byte at `+0x03`. For party mons this is the
+    /// stale box copy; the authoritative level is `level()`.
+    fn box_level(&self) -> u8 {
+        self.raw()[off::BOX_LEVEL]
+    }
 
-            /// Raw status byte (see the `STATUS_*` constants).
-            pub fn status(&self) -> u8 {
-                self.0[off::STATUS]
-            }
+    /// Raw status byte (see the `STATUS_*` constants).
+    fn status(&self) -> u8 {
+        self.raw()[off::STATUS]
+    }
 
-            /// Remaining sleep turns (0 = awake), status bits 0-2.
-            pub fn sleep_turns(&self) -> u8 {
-                self.status() & STATUS_SLEEP_MASK
-            }
+    /// Remaining sleep turns (0 = awake), status bits 0-2.
+    fn sleep_turns(&self) -> u8 {
+        self.status() & STATUS_SLEEP_MASK
+    }
 
-            pub fn is_poisoned(&self) -> bool {
-                self.status() & STATUS_POISONED != 0
-            }
+    /// Whether the poison status bit is set.
+    fn is_poisoned(&self) -> bool {
+        self.status() & STATUS_POISONED != 0
+    }
 
-            pub fn is_burned(&self) -> bool {
-                self.status() & STATUS_BURNED != 0
-            }
+    /// Whether the burn status bit is set.
+    fn is_burned(&self) -> bool {
+        self.status() & STATUS_BURNED != 0
+    }
 
-            pub fn is_frozen(&self) -> bool {
-                self.status() & STATUS_FROZEN != 0
-            }
+    /// Whether the freeze status bit is set.
+    fn is_frozen(&self) -> bool {
+        self.status() & STATUS_FROZEN != 0
+    }
 
-            pub fn is_paralyzed(&self) -> bool {
-                self.status() & STATUS_PARALYZED != 0
-            }
+    /// Whether the paralysis status bit is set.
+    fn is_paralyzed(&self) -> bool {
+        self.status() & STATUS_PARALYZED != 0
+    }
 
-            /// `(type1, type2)`; equal for monotype species.
-            pub fn types(&self) -> (u8, u8) {
-                (self.0[off::TYPE1], self.0[off::TYPE2])
-            }
+    /// `(type1, type2)`; equal for monotype species.
+    fn types(&self) -> (u8, u8) {
+        (self.raw()[off::TYPE1], self.raw()[off::TYPE2])
+    }
 
-            pub fn catch_rate(&self) -> u8 {
-                self.0[off::CATCH_RATE]
-            }
+    /// The catch rate byte.
+    fn catch_rate(&self) -> u8 {
+        self.raw()[off::CATCH_RATE]
+    }
 
-            /// The four move indexes (0 = empty slot).
-            pub fn moves(&self) -> [u8; 4] {
-                [
-                    self.0[off::MOVES],
-                    self.0[off::MOVES + 1],
-                    self.0[off::MOVES + 2],
-                    self.0[off::MOVES + 3],
-                ]
-            }
+    /// The four move indexes (0 = empty slot).
+    fn moves(&self) -> [u8; 4] {
+        [
+            self.raw()[off::MOVES],
+            self.raw()[off::MOVES + 1],
+            self.raw()[off::MOVES + 2],
+            self.raw()[off::MOVES + 3],
+        ]
+    }
 
-            pub fn ot_id(&self) -> u16 {
-                get_u16(&self.0, off::OT_ID)
-            }
+    /// Original trainer ID.
+    fn ot_id(&self) -> u16 {
+        get_u16(self.raw(), off::OT_ID)
+    }
 
-            /// Total experience (3 bytes big-endian).
-            pub fn exp(&self) -> u32 {
-                u32::from(self.0[off::EXP]) << 16
-                    | u32::from(self.0[off::EXP + 1]) << 8
-                    | u32::from(self.0[off::EXP + 2])
-            }
+    /// Total experience (3 bytes big-endian).
+    fn exp(&self) -> u32 {
+        u32::from(self.raw()[off::EXP]) << 16
+            | u32::from(self.raw()[off::EXP + 1]) << 8
+            | u32::from(self.raw()[off::EXP + 2])
+    }
 
-            /// Stat experience in record order: HP, Attack, Defense,
-            /// Speed, Special.
-            pub fn stat_exps(&self) -> [u16; 5] {
-                [
-                    get_u16(&self.0, off::STAT_EXP),
-                    get_u16(&self.0, off::STAT_EXP + 2),
-                    get_u16(&self.0, off::STAT_EXP + 4),
-                    get_u16(&self.0, off::STAT_EXP + 6),
-                    get_u16(&self.0, off::STAT_EXP + 8),
-                ]
-            }
+    /// Stat experience in record order: HP, Attack, Defense,
+    /// Speed, Special.
+    fn stat_exps(&self) -> [u16; 5] {
+        [
+            get_u16(self.raw(), off::STAT_EXP),
+            get_u16(self.raw(), off::STAT_EXP + 2),
+            get_u16(self.raw(), off::STAT_EXP + 4),
+            get_u16(self.raw(), off::STAT_EXP + 6),
+            get_u16(self.raw(), off::STAT_EXP + 8),
+        ]
+    }
 
-            pub fn dvs(&self) -> Dvs {
-                Dvs::unpack([self.0[off::DVS], self.0[off::DVS + 1]])
-            }
+    /// The unpacked DVs.
+    fn dvs(&self) -> Dvs {
+        Dvs::unpack([self.raw()[off::DVS], self.raw()[off::DVS + 1]])
+    }
 
-            /// The four raw PP bytes (decode with [`stats::current_pp`] /
-            /// [`stats::pp_ups`]).
-            pub fn pp(&self) -> [u8; 4] {
-                [
-                    self.0[off::PP],
-                    self.0[off::PP + 1],
-                    self.0[off::PP + 2],
-                    self.0[off::PP + 3],
-                ]
-            }
-        }
-    };
+    /// The four raw PP bytes (decode with [`stats::current_pp`] /
+    /// [`stats::pp_ups`]).
+    fn pp(&self) -> [u8; 4] {
+        [
+            self.raw()[off::PP],
+            self.raw()[off::PP + 1],
+            self.raw()[off::PP + 2],
+            self.raw()[off::PP + 3],
+        ]
+    }
 }
 
-common_getters!(PartyMonView);
-common_getters!(PartyMonMut);
-common_getters!(BoxMonView);
-common_getters!(BoxMonMut);
+impl MonView for PartyMonView<'_> {}
+impl MonView for PartyMonMut<'_> {}
+impl MonView for BoxMonView<'_> {}
+impl MonView for BoxMonMut<'_> {}
 
 /// Setters for the fields shared by party and box records.
-macro_rules! common_setters {
-    ($ty:ident) => {
-        impl<'a> $ty<'a> {
-            /// Set the species byte (internal index). Note: a mon inside
-            /// a party/box list must keep the block's species list in
-            /// sync — prefer `PartyMut::set_species` there.
-            pub fn set_species(&mut self, species: u8) {
-                self.0[off::SPECIES] = species;
-            }
+///
+/// Implemented by [`PartyMonMut`] and [`BoxMonMut`]; every method is
+/// provided. Sealed — the trait cannot be implemented outside this
+/// module.
+pub trait MonMut: MonView + sealed::ReprMut {
+    /// Set the species byte (internal index). Note: a mon inside
+    /// a party/box list must keep the block's species list in
+    /// sync — prefer `PartyMut::set_species` there.
+    fn set_species(&mut self, species: u8) {
+        self.raw_mut()[off::SPECIES] = species;
+    }
 
-            pub fn set_current_hp(&mut self, hp: u16) {
-                set_u16(&mut self.0, off::CURRENT_HP, hp);
-            }
+    /// Set the current HP.
+    fn set_current_hp(&mut self, hp: u16) {
+        set_u16(self.raw_mut(), off::CURRENT_HP, hp);
+    }
 
-            pub fn set_box_level(&mut self, level: u8) {
-                self.0[off::BOX_LEVEL] = level;
-            }
+    /// Set the box level byte at `+0x03` (see [`MonView::box_level`]).
+    fn set_box_level(&mut self, level: u8) {
+        self.raw_mut()[off::BOX_LEVEL] = level;
+    }
 
-            pub fn set_status(&mut self, status: u8) {
-                self.0[off::STATUS] = status;
-            }
+    /// Set the raw status byte (see the `STATUS_*` constants).
+    fn set_status(&mut self, status: u8) {
+        self.raw_mut()[off::STATUS] = status;
+    }
 
-            pub fn set_types(&mut self, type1: u8, type2: u8) {
-                self.0[off::TYPE1] = type1;
-                self.0[off::TYPE2] = type2;
-            }
+    /// Set both type bytes.
+    fn set_types(&mut self, type1: u8, type2: u8) {
+        self.raw_mut()[off::TYPE1] = type1;
+        self.raw_mut()[off::TYPE2] = type2;
+    }
 
-            pub fn set_catch_rate(&mut self, catch_rate: u8) {
-                self.0[off::CATCH_RATE] = catch_rate;
-            }
+    /// Set the catch rate byte.
+    fn set_catch_rate(&mut self, catch_rate: u8) {
+        self.raw_mut()[off::CATCH_RATE] = catch_rate;
+    }
 
-            pub fn set_moves(&mut self, moves: [u8; 4]) {
-                self.0[off::MOVES..off::MOVES + 4].copy_from_slice(&moves);
-            }
+    /// Set the four move indexes (0 = empty slot).
+    fn set_moves(&mut self, moves: [u8; 4]) {
+        self.raw_mut()[off::MOVES..off::MOVES + 4].copy_from_slice(&moves);
+    }
 
-            pub fn set_ot_id(&mut self, id: u16) {
-                set_u16(&mut self.0, off::OT_ID, id);
-            }
+    /// Set the original trainer ID.
+    fn set_ot_id(&mut self, id: u16) {
+        set_u16(self.raw_mut(), off::OT_ID, id);
+    }
 
-            /// Set total experience (masked to 24 bits).
-            pub fn set_exp(&mut self, exp: u32) {
-                self.0[off::EXP] = (exp >> 16) as u8;
-                self.0[off::EXP + 1] = (exp >> 8) as u8;
-                self.0[off::EXP + 2] = exp as u8;
-            }
+    /// Set total experience (masked to 24 bits).
+    fn set_exp(&mut self, exp: u32) {
+        self.raw_mut()[off::EXP] = (exp >> 16) as u8;
+        self.raw_mut()[off::EXP + 1] = (exp >> 8) as u8;
+        self.raw_mut()[off::EXP + 2] = exp as u8;
+    }
 
-            /// Set stat experience in record order: HP, Attack, Defense,
-            /// Speed, Special.
-            pub fn set_stat_exps(&mut self, stat_exps: [u16; 5]) {
-                for (i, se) in stat_exps.into_iter().enumerate() {
-                    set_u16(&mut self.0, off::STAT_EXP + 2 * i, se);
-                }
-            }
-
-            pub fn set_dvs(&mut self, dvs: Dvs) {
-                let packed = dvs.pack();
-                self.0[off::DVS] = packed[0];
-                self.0[off::DVS + 1] = packed[1];
-            }
-
-            /// Set the four raw PP bytes (compose with
-            /// [`stats::compose_pp`]).
-            pub fn set_pp(&mut self, pp: [u8; 4]) {
-                self.0[off::PP..off::PP + 4].copy_from_slice(&pp);
-            }
+    /// Set stat experience in record order: HP, Attack, Defense,
+    /// Speed, Special.
+    fn set_stat_exps(&mut self, stat_exps: [u16; 5]) {
+        for (i, se) in stat_exps.into_iter().enumerate() {
+            set_u16(self.raw_mut(), off::STAT_EXP + 2 * i, se);
         }
-    };
+    }
+
+    /// Set the DVs (packed into the two bytes at `+0x1B`).
+    fn set_dvs(&mut self, dvs: Dvs) {
+        let packed = dvs.pack();
+        self.raw_mut()[off::DVS] = packed[0];
+        self.raw_mut()[off::DVS + 1] = packed[1];
+    }
+
+    /// Set the four raw PP bytes (compose with
+    /// [`stats::compose_pp`]).
+    fn set_pp(&mut self, pp: [u8; 4]) {
+        self.raw_mut()[off::PP..off::PP + 4].copy_from_slice(&pp);
+    }
 }
 
-common_setters!(PartyMonMut);
-common_setters!(BoxMonMut);
+impl MonMut for PartyMonMut<'_> {}
+impl MonMut for BoxMonMut<'_> {}
 
 /// Party-only getters (bytes 0x21..0x2C).
-macro_rules! party_getters {
-    ($ty:ident) => {
-        impl<'a> $ty<'a> {
-            /// The authoritative party level (`+0x21`).
-            pub fn level(&self) -> u8 {
-                self.0[off::LEVEL]
-            }
+///
+/// Implemented by [`PartyMonView`] and [`PartyMonMut`]; every method is
+/// provided. Sealed — the trait cannot be implemented outside this
+/// module.
+pub trait PartyMon: MonView {
+    /// The authoritative party level (`+0x21`).
+    fn level(&self) -> u8 {
+        self.raw()[off::LEVEL]
+    }
 
-            pub fn max_hp(&self) -> u16 {
-                get_u16(&self.0, off::MAX_HP)
-            }
+    /// Calculated max HP.
+    fn max_hp(&self) -> u16 {
+        get_u16(self.raw(), off::MAX_HP)
+    }
 
-            pub fn attack(&self) -> u16 {
-                get_u16(&self.0, off::ATTACK)
-            }
+    /// Calculated Attack stat.
+    fn attack(&self) -> u16 {
+        get_u16(self.raw(), off::ATTACK)
+    }
 
-            pub fn defense(&self) -> u16 {
-                get_u16(&self.0, off::DEFENSE)
-            }
+    /// Calculated Defense stat.
+    fn defense(&self) -> u16 {
+        get_u16(self.raw(), off::DEFENSE)
+    }
 
-            pub fn speed(&self) -> u16 {
-                get_u16(&self.0, off::SPEED)
-            }
+    /// Calculated Speed stat.
+    fn speed(&self) -> u16 {
+        get_u16(self.raw(), off::SPEED)
+    }
 
-            pub fn special(&self) -> u16 {
-                get_u16(&self.0, off::SPECIAL)
-            }
-        }
-    };
+    /// Calculated Special stat.
+    fn special(&self) -> u16 {
+        get_u16(self.raw(), off::SPECIAL)
+    }
 }
 
-party_getters!(PartyMonView);
-party_getters!(PartyMonMut);
+impl PartyMon for PartyMonView<'_> {}
+impl PartyMon for PartyMonMut<'_> {}
 
 impl<'a> PartyMonMut<'a> {
     /// Read-only view of the same record.
@@ -342,22 +428,27 @@ impl<'a> PartyMonMut<'a> {
         self.0[off::LEVEL] = level;
     }
 
+    /// Set the calculated max HP stat (`+0x22`).
     pub fn set_max_hp(&mut self, value: u16) {
         set_u16(self.0, off::MAX_HP, value);
     }
 
+    /// Set the calculated Attack stat (`+0x24`).
     pub fn set_attack(&mut self, value: u16) {
         set_u16(self.0, off::ATTACK, value);
     }
 
+    /// Set the calculated Defense stat (`+0x26`).
     pub fn set_defense(&mut self, value: u16) {
         set_u16(self.0, off::DEFENSE, value);
     }
 
+    /// Set the calculated Speed stat (`+0x28`).
     pub fn set_speed(&mut self, value: u16) {
         set_u16(self.0, off::SPEED, value);
     }
 
+    /// Set the calculated Special stat (`+0x2A`).
     pub fn set_special(&mut self, value: u16) {
         set_u16(self.0, off::SPECIAL, value);
     }

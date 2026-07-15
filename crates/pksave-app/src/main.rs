@@ -7,6 +7,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod error;
 mod io;
 mod screens;
 mod widgets;
@@ -17,13 +18,14 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1100.0, 740.0])
+            .with_min_inner_size([900.0, 600.0])
             .with_title("pksave — Gen 1 save editor"),
         ..Default::default()
     };
     eframe::run_native(
         "pksave",
         options,
-        Box::new(|cc| Ok(Box::new(app::App::new(cc)))),
+        Box::new(|_cc| Ok(Box::new(app::App::new()))),
     )
 }
 
@@ -50,7 +52,7 @@ fn main() {
             .start(
                 canvas,
                 web_options,
-                Box::new(|cc| Ok(Box::new(app::App::new(cc)))),
+                Box::new(|_cc| Ok(Box::new(app::App::new()))),
             )
             .await;
 

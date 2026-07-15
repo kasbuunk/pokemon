@@ -153,6 +153,30 @@ fn set_qty_clamps_and_set_id_overwrites() {
     assert_eq!(save.bag_items().get(1), Some((MASTER_BALL, 7)));
 }
 
+// The documented panic contract of set_qty/set_id/swap: index >= len()
+// panics via pair_offset ("item index {i} out of range (len {n})").
+
+#[test]
+#[should_panic(expected = "out of range")]
+fn set_qty_out_of_range_panics() {
+    let mut save = bag_with_three();
+    save.bag_items_mut().set_qty(3, 1);
+}
+
+#[test]
+#[should_panic(expected = "out of range")]
+fn set_id_out_of_range_panics() {
+    let mut save = bag_with_three();
+    save.bag_items_mut().set_id(3, POTION);
+}
+
+#[test]
+#[should_panic(expected = "out of range")]
+fn swap_out_of_range_panics() {
+    let mut save = bag_with_three();
+    save.bag_items_mut().swap(0, 3);
+}
+
 #[test]
 fn swap_exchanges_pairs() {
     let mut save = bag_with_three();
@@ -174,7 +198,7 @@ fn structural_edits_touch_only_the_list_region() {
     let ops: Vec<Op> = vec![
         (
             "add",
-            Box::new(|s| s.bag_items_mut().add(POTION, 9).unwrap()),
+            Box::new(|s| s.bag_items_mut().add(POTION, 9).expect("has room")),
         ),
         ("remove", Box::new(|s| s.bag_items_mut().remove(1))),
         ("set_qty", Box::new(|s| s.bag_items_mut().set_qty(0, 50))),

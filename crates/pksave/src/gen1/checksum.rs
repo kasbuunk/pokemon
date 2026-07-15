@@ -67,6 +67,16 @@ impl Region {
         }
     }
 
+    /// Inverse of [`Region::checksum_offset`]: the region whose *stored
+    /// checksum byte* lives at `offset`, or `None` if `offset` is not one
+    /// of the 15 checksum bytes. Used by the raw-write path
+    /// (`SaveFile::set_bytes`) to detect writes that pin a checksum.
+    pub fn at_checksum_offset(offset: usize) -> Option<Region> {
+        Region::ALL
+            .into_iter()
+            .find(|region| region.checksum_offset() == offset)
+    }
+
     /// File offset of the checksum byte itself.
     pub fn checksum_offset(self) -> usize {
         match self {
@@ -88,6 +98,7 @@ impl Region {
 /// A stored checksum that does not match the bytes it covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChecksumMismatch {
+    /// The checksummed region that failed verification.
     pub region: Region,
     /// Checksum byte currently stored in the file.
     pub stored: u8,
@@ -158,6 +169,35 @@ mod tests {
         // Per-box regions tile their bank's all-boxes region exactly.
         assert_eq!(Region::Box(5).data_range().end, 0x5A4C);
         assert_eq!(Region::Box(11).data_range().end, 0x7A4C);
+    }
+
+    #[test]
+    fn at_checksum_offset_inverts_checksum_offset() {
+        for region in Region::ALL {
+            assert_eq!(
+                Region::at_checksum_offset(region.checksum_offset()),
+                Some(region)
+            );
+        }
+        // Immediate neighbors that are not themselves checksum bytes
+        // (the per-box blocks are contiguous with their bank checksum,
+        // so skip neighbors that land on another region's byte).
+        let checksum_offsets: Vec<usize> =
+            Region::ALL.iter().map(|r| r.checksum_offset()).collect();
+        for region in Region::ALL {
+            let at = region.checksum_offset();
+            for neighbor in [at - 1, at + 1] {
+                if !checksum_offsets.contains(&neighbor) {
+                    assert_eq!(
+                        Region::at_checksum_offset(neighbor),
+                        None,
+                        "0x{neighbor:04X}"
+                    );
+                }
+            }
+        }
+        assert_eq!(Region::at_checksum_offset(0), None);
+        assert_eq!(Region::at_checksum_offset(offsets::SRAM_SIZE), None);
     }
 
     #[test]

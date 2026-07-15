@@ -13,7 +13,7 @@ use core::ops::Range;
 use pksave::gen1::checksum::Region;
 use pksave::gen1::data::DEX_TO_INDEX;
 use pksave::gen1::offsets;
-use pksave::gen1::pokemon::{BoxMonMut, PartyMonMut};
+use pksave::gen1::pokemon::{BoxMonMut, MonMut, PartyMonMut};
 use pksave::gen1::save::{changed_ranges, GameVariant, SaveFile};
 
 fn make_box_mon(dex: usize, level: u8) -> [u8; offsets::BOX_MON_SIZE] {
@@ -78,7 +78,7 @@ fn registry() -> Vec<Edit> {
             apply: Box::new(|s| {
                 s.box_mut(5)
                     .add(&make_box_mon(151, 30), "RED", "MEW")
-                    .unwrap();
+                    .expect("room");
             }),
             allowed: vec![box_block(5)],
             checksums: bank_checksums(5),
@@ -88,8 +88,8 @@ fn registry() -> Vec<Edit> {
             setup: Box::new(|_| {}),
             apply: Box::new(|s| {
                 let mut bx = s.box_mut(9);
-                bx.add(&make_box_mon(1, 5), "A", "X").unwrap();
-                bx.add(&make_box_mon(4, 6), "B", "Y").unwrap();
+                bx.add(&make_box_mon(1, 5), "A", "X").expect("room");
+                bx.add(&make_box_mon(4, 6), "B", "Y").expect("room");
                 bx.swap(0, 1);
                 bx.remove(0);
             }),
@@ -102,7 +102,7 @@ fn registry() -> Vec<Edit> {
             apply: Box::new(|s| {
                 s.box_mut(0)
                     .add(&make_box_mon(151, 30), "RED", "MEW")
-                    .unwrap();
+                    .expect("room");
             }),
             allowed: vec![CURRENT_BOX_BLOCK],
             checksums: vec![MAIN],
@@ -120,7 +120,7 @@ fn registry() -> Vec<Edit> {
             apply: Box::new(|s| {
                 s.box_mut(0)
                     .add(&make_box_mon(151, 30), "RED", "MEW")
-                    .unwrap();
+                    .expect("room");
                 s.sync_current_box_to_bank();
             }),
             allowed: vec![CURRENT_BOX_BLOCK, box_block(0)],
@@ -131,9 +131,9 @@ fn registry() -> Vec<Edit> {
             setup: Box::new(|s| {
                 s.party_mut()
                     .add(&make_party_mon(25, 42), "ASH", "SPARKY")
-                    .unwrap();
+                    .expect("room");
             }),
-            apply: Box::new(|s| s.deposit(0, 3).unwrap()),
+            apply: Box::new(|s| s.deposit(0, 3).expect("valid deposit")),
             allowed: vec![PARTY_BLOCK, box_block(3)],
             checksums: [vec![MAIN], bank_checksums(3)].concat(),
         },
@@ -142,9 +142,9 @@ fn registry() -> Vec<Edit> {
             setup: Box::new(|s| {
                 s.box_mut(8)
                     .add(&make_box_mon(151, 30), "RED", "MEW")
-                    .unwrap();
+                    .expect("room");
             }),
-            apply: Box::new(|s| s.withdraw(8, 0).unwrap()),
+            apply: Box::new(|s| s.withdraw(8, 0).expect("valid withdraw")),
             allowed: vec![PARTY_BLOCK, box_block(8)],
             checksums: [vec![MAIN], bank_checksums(8)].concat(),
         },
@@ -153,7 +153,7 @@ fn registry() -> Vec<Edit> {
             setup: Box::new(|_| {}),
             apply: Box::new(|s| {
                 s.set_daycare(Some((&make_box_mon(113, 40), "JOY", "LUCKY")))
-                    .unwrap();
+                    .expect("names encode");
             }),
             allowed: vec![span(
                 offsets::DAYCARE_IN_USE,
@@ -254,7 +254,7 @@ fn registry() -> Vec<Edit> {
             apply: Box::new(|s| {
                 s.hof_team_mut(4)
                     .set_mon(1, DEX_TO_INDEX[6], 78, "ZARD")
-                    .unwrap();
+                    .expect("nickname encodes");
             }),
             allowed: vec![span(
                 offsets::HALL_OF_FAME + 4 * offsets::HOF_TEAM_SIZE + offsets::HOF_MON_SIZE,

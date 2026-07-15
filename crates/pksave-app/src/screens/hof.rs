@@ -11,9 +11,19 @@ use crate::widgets;
 #[derive(Default)]
 pub struct HofState {
     pub team: usize,
+    /// "Clear team" was clicked once; waiting for the confirming click.
+    pub confirm_clear: bool,
 }
 
 pub fn ui(ui: &mut egui::Ui, doc: &mut Doc, state: &mut HofState) {
+    egui::ScrollArea::vertical()
+        .id_salt("hof_screen")
+        .show(ui, |ui| {
+            body(ui, doc, state);
+        });
+}
+
+fn body(ui: &mut egui::Ui, doc: &mut Doc, state: &mut HofState) {
     ui.heading("Hall of Fame");
     ui.add_space(4.0);
     let mut touched = false;
@@ -46,14 +56,29 @@ pub fn ui(ui: &mut egui::Ui, doc: &mut Doc, state: &mut HofState) {
             .changed()
         {
             state.team = team;
+            state.confirm_clear = false;
         }
         ui.weak("(0 = oldest stored)");
-        if ui.button("Clear team").clicked() {
-            let mut t = doc.save.hof_team_mut(state.team);
-            for slot in 0..HOF_TEAM_LEN {
-                t.clear_slot(slot);
+        if !state.confirm_clear {
+            if ui.button("Clear team").clicked() {
+                state.confirm_clear = true;
             }
-            touched = true;
+        } else {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                format!("Empty all 6 slots of team {}?", state.team),
+            );
+            if ui.button("Yes, clear team").clicked() {
+                let mut t = doc.save.hof_team_mut(state.team);
+                for slot in 0..HOF_TEAM_LEN {
+                    t.clear_slot(slot);
+                }
+                state.confirm_clear = false;
+                touched = true;
+            }
+            if ui.button("Cancel").clicked() {
+                state.confirm_clear = false;
+            }
         }
     });
     ui.add_space(6.0);

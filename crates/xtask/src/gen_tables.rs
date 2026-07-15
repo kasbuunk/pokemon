@@ -691,6 +691,10 @@ fn gen_items(pokered: &Path, charmap: &Charmap) -> String {
     );
     let _ = writeln!(w, "//! renders them.");
     let _ = writeln!(w);
+    let _ = writeln!(
+        w,
+        "/// Item display names indexed by item id (`\"\"` for invalid/glitch ids)."
+    );
     emit_str_array(w, "ITEM_NAMES", &item_names);
     out
 }
@@ -772,6 +776,10 @@ fn gen_types(pokered: &Path, charmap: &Charmap) -> String {
     );
     let _ = writeln!(w, "//! special types, and $09-$13 are unused (\"\").");
     let _ = writeln!(w);
+    let _ = writeln!(
+        w,
+        "/// Type names indexed by Gen 1 type id (`\"\"` for the unused gap)."
+    );
     emit_str_array(w, "TYPE_NAMES", &type_names);
     out
 }
@@ -832,6 +840,10 @@ fn gen_events(pokered: &Path) -> String {
         "//! (wEventFlags spans 320 bytes of WRAM, all copied into the save)."
     );
     let _ = writeln!(w);
+    let _ = writeln!(
+        w,
+        "/// `EVENT_*` names indexed by `wEventFlags` bit number (`\"\"` for unnamed bits)."
+    );
     emit_str_array_decl(w, "static", "EVENT_FLAG_NAMES", &names);
     out
 }
@@ -859,6 +871,10 @@ fn gen_maps(pokered: &Path) -> String {
         "//! Map constant names indexed by map id (\"\" for unused ids)."
     );
     let _ = writeln!(w);
+    let _ = writeln!(
+        w,
+        "/// pokered map constant names indexed by map id (`\"\"` for unused ids)."
+    );
     emit_str_array(w, "MAP_NAMES", &names);
     out
 }

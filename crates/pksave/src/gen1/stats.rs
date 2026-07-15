@@ -40,9 +40,13 @@ pub fn calc_stat(base: u8, dv: u8, stat_exp: u16, level: u8, is_hp: bool) -> u16
 /// (see [`Dvs::hp_dv`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Dvs {
+    /// Attack DV (0-15), high nibble of the first DV byte.
     pub attack: u8,
+    /// Defense DV (0-15), low nibble of the first DV byte.
     pub defense: u8,
+    /// Speed DV (0-15), high nibble of the second DV byte.
     pub speed: u8,
+    /// Special DV (0-15), low nibble of the second DV byte.
     pub special: u8,
 }
 

@@ -30,6 +30,7 @@ fn locate(bit: usize, len_bits: usize) -> (usize, u8) {
 }
 
 impl<'a> BitSlice<'a> {
+    /// Wrap a byte slice for bit-level reads.
     pub fn new(bytes: &'a [u8]) -> Self {
         BitSlice { bytes }
     }
@@ -61,6 +62,7 @@ impl<'a> BitSlice<'a> {
 }
 
 impl<'a> BitSliceMut<'a> {
+    /// Wrap a byte slice for bit-level reads and writes.
     pub fn new(bytes: &'a mut [u8]) -> Self {
         BitSliceMut { bytes }
     }

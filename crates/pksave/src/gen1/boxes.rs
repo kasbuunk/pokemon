@@ -23,7 +23,7 @@
 use thiserror::Error;
 
 use super::offsets;
-use super::pokemon::{box_to_party, party_to_box, BoxMonMut, BoxMonView};
+use super::pokemon::{box_to_party, party_to_box, BoxMonMut, BoxMonView, MonMut, MonView};
 use super::save::SaveFile;
 use super::text::{self, TextError};
 
@@ -98,8 +98,10 @@ pub(crate) mod party_layout {
 /// A box edit that cannot be applied.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum BoxError {
+    /// The box already holds [`offsets::MONS_PER_BOX`] (20) mons.
     #[error("box is full ({capacity} mons)", capacity = offsets::MONS_PER_BOX)]
     Full,
+    /// A nickname or OT name failed to encode.
     #[error(transparent)]
     Text(#[from] TextError),
 }
@@ -310,6 +312,7 @@ impl<'a> BoxView<'a> {
         usize::from(self.data[layout::COUNT]).min(offsets::MONS_PER_BOX)
     }
 
+    /// Whether the box holds no mons.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -360,6 +363,7 @@ impl<'a> BoxMut<'a> {
         self.as_view().len()
     }
 
+    /// Whether the box holds no mons.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

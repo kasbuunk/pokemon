@@ -15,13 +15,21 @@ use super::{bcd, text};
 /// (bit 0 = Boulder … bit 7 = Earth).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Badge {
+    /// Boulder Badge (Brock, Pewter City) — bit 0.
     Boulder,
+    /// Cascade Badge (Misty, Cerulean City) — bit 1.
     Cascade,
+    /// Thunder Badge (Lt. Surge, Vermilion City) — bit 2.
     Thunder,
+    /// Rainbow Badge (Erika, Celadon City) — bit 3.
     Rainbow,
+    /// Soul Badge (Koga, Fuchsia City) — bit 4.
     Soul,
+    /// Marsh Badge (Sabrina, Saffron City) — bit 5.
     Marsh,
+    /// Volcano Badge (Blaine, Cinnabar Island) — bit 6.
     Volcano,
+    /// Earth Badge (Giovanni, Viridian City) — bit 7.
     Earth,
 }
 
@@ -47,8 +55,11 @@ impl Badge {
 /// Text speed nibble of the options byte (frames per letter).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextSpeed {
+    /// 1 frame per letter.
     Fast = 1,
+    /// 3 frames per letter (the game's default).
     Medium = 3,
+    /// 5 frames per letter.
     Slow = 5,
 }
 
@@ -56,7 +67,9 @@ pub enum TextSpeed {
 /// `wPlayTimeMaxed` flag (set once the clock hits 255:59:59).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlayTime {
+    /// 0-255 (`wPlayTimeHours`); the clock stops at 255.
     pub hours: u8,
+    /// `wPlayTimeMaxed`: true once the clock froze at 255:59:59.
     pub maxed: bool,
     /// 0-59; clamped on write.
     pub minutes: u8,

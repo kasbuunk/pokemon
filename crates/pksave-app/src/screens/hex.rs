@@ -4,7 +4,6 @@
 
 use egui_extras::{Column, TableBuilder};
 use pksave::gen1::offsets;
-use pksave::gen1::save::SaveFile;
 
 use crate::app::Doc;
 
@@ -117,21 +116,37 @@ pub fn ascii_gutter(bytes: &[u8]) -> String {
         .collect()
 }
 
+/// Parse the jump-to-offset text: hex digits with an optional `0x`/`0X`
+/// prefix and surrounding whitespace. `None` when unparsable or `>= len`.
+pub fn parse_jump(text: &str, len: usize) -> Option<usize> {
+    let t = text.trim();
+    let t = t
+        .strip_prefix("0x")
+        .or_else(|| t.strip_prefix("0X"))
+        .unwrap_or(t);
+    let offset = usize::from_str_radix(t, 16).ok()?;
+    (offset < len).then_some(offset)
+}
+
 pub fn ui(ui: &mut egui::Ui, doc: &mut Doc, state: &mut HexState) {
     ui.heading("Hex");
     ui.add_space(4.0);
 
-    // The bytes exactly as they would be saved (checksums included).
-    let bytes = doc.save.to_bytes();
+    // The bytes exactly as they would be saved (checksums included) —
+    // cached on the Doc and refreshed after each touched frame, so this
+    // does not re-serialize the buffer every frame.
+    let bytes: &[u8] = doc.serialized();
     let rows = bytes.len().div_ceil(BYTES_PER_ROW);
     let dark = ui.visuals().dark_mode;
+    let mut write: Option<(usize, u8)> = None;
 
     // ---- toolbar ----
     ui.horizontal(|ui| {
         ui.checkbox(&mut state.edit_enabled, "Enable editing")
             .on_hover_text(
-                "Click a byte, then type a hex value. Checksum bytes are recomputed again \
-                 on save, so editing them has no lasting effect.",
+                "Click a byte, then type a hex value. A hand-edited checksum byte is \
+                 PINNED: it is kept verbatim on save (W-CHECKSUM warns if it mismatches \
+                 the data); Repair → Fix all checksums unpins and repairs it.",
             );
         ui.separator();
         ui.label("Jump to offset (hex):");
@@ -143,11 +158,8 @@ pub fn ui(ui: &mut egui::Ui, doc: &mut Doc, state: &mut HexState) {
         let go = ui.button("Go").clicked()
             || (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
         if go {
-            if let Ok(offset) = usize::from_str_radix(state.jump_text.trim_start_matches("0x"), 16)
-            {
-                if offset < bytes.len() {
-                    state.scroll_to(offset);
-                }
+            if let Some(offset) = parse_jump(&state.jump_text, bytes.len()) {
+                state.scroll_to(offset);
             }
         }
         ui.separator();
@@ -195,7 +207,7 @@ pub fn ui(ui: &mut egui::Ui, doc: &mut Doc, state: &mut HexState) {
                     || (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
                 match parsed {
                     Ok(value) if apply => {
-                        write_byte(doc, offset, value);
+                        write = Some((offset, value));
                         state.edit_text.clear();
                     }
                     Err(_) if !state.edit_text.is_empty() => {
@@ -289,6 +301,16 @@ pub fn ui(ui: &mut egui::Ui, doc: &mut Doc, state: &mut HexState) {
         state.selected = Some(offset);
         state.edit_text = format!("{:02X}", bytes.get(offset).copied().unwrap_or(0));
     }
+
+    // Deferred past the table so the render borrows the cached bytes.
+    if let Some((offset, value)) = write {
+        // In-place raw edit; a write to a stored checksum byte pins it
+        // (see the toolbar tooltip). Out-of-range cannot happen here —
+        // `offset` was validated against the rendered buffer.
+        if doc.save.set_byte(offset, value).is_ok() {
+            doc.touch();
+        }
+    }
 }
 
 fn changed_color(dark: bool) -> egui::Color32 {
@@ -296,22 +318,6 @@ fn changed_color(dark: bool) -> egui::Color32 {
         egui::Color32::from_rgb(255, 120, 100)
     } else {
         egui::Color32::from_rgb(200, 40, 20)
-    }
-}
-
-/// Write one raw byte. The core exposes no public raw mutable buffer, so
-/// this rebuilds the `SaveFile` from the serialized bytes and marks it
-/// edited (checksums are recomputed on the next serialize).
-fn write_byte(doc: &mut Doc, offset: usize, value: u8) {
-    let mut bytes = doc.save.to_bytes();
-    if offset >= bytes.len() {
-        return;
-    }
-    bytes[offset] = value;
-    if let Ok(mut save) = SaveFile::from_bytes(bytes) {
-        save.mark_edited();
-        doc.save = save;
-        doc.touch();
     }
 }
 
@@ -376,6 +382,37 @@ mod tests {
         assert_eq!(region_of(offsets::SRAM_SIZE), Region::Other);
         // The gap between the main region and bank 2.
         assert_eq!(region_of(0x3600), Region::Other);
+    }
+
+    #[test]
+    fn parse_jump_accepts_plain_and_prefixed_hex() {
+        assert_eq!(parse_jump("2f2c", 0x8000), Some(0x2F2C));
+        assert_eq!(parse_jump("2F2C", 0x8000), Some(0x2F2C));
+        assert_eq!(parse_jump("0x2f2c", 0x8000), Some(0x2F2C));
+        assert_eq!(parse_jump("0X2F2C", 0x8000), Some(0x2F2C));
+        assert_eq!(parse_jump("0", 0x8000), Some(0));
+    }
+
+    #[test]
+    fn parse_jump_trims_whitespace() {
+        assert_eq!(parse_jump("  1a2b  ", 0x8000), Some(0x1A2B));
+        assert_eq!(parse_jump("\t0x10\n", 0x8000), Some(0x10));
+    }
+
+    #[test]
+    fn parse_jump_rejects_out_of_range() {
+        assert_eq!(parse_jump("8000", 0x8000), None);
+        assert_eq!(parse_jump("7fff", 0x8000), Some(0x7FFF));
+        assert_eq!(parse_jump("0", 0), None);
+    }
+
+    #[test]
+    fn parse_jump_rejects_garbage() {
+        assert_eq!(parse_jump("", 0x8000), None);
+        assert_eq!(parse_jump("0x", 0x8000), None);
+        assert_eq!(parse_jump("wxyz", 0x8000), None);
+        assert_eq!(parse_jump("12 34", 0x8000), None);
+        assert_eq!(parse_jump("-5", 0x8000), None);
     }
 
     #[test]

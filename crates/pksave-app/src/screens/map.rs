@@ -25,6 +25,14 @@ fn map_label(id: u8) -> String {
 }
 
 pub fn ui(ui: &mut egui::Ui, doc: &mut Doc, state: &mut MapState) {
+    egui::ScrollArea::vertical()
+        .id_salt("map_screen")
+        .show(ui, |ui| {
+            body(ui, doc, state);
+        });
+}
+
+fn body(ui: &mut egui::Ui, doc: &mut Doc, state: &mut MapState) {
     ui.heading("Map");
     ui.add_space(4.0);
     let mut touched = false;

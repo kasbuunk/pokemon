@@ -1,8 +1,9 @@
 //! Flags screen: named event flags (searchable), badges + fly
-//! destinations, and the raw missable-object bits.
+//! destinations, hidden-item pickups and the raw missable-object bits.
 
 use egui_extras::{Column, TableBuilder};
 use pksave::gen1::events::TOWN_NAMES;
+use pksave::gen1::offsets;
 use pksave::gen1::trainer::Badge;
 
 use crate::app::Doc;
@@ -12,6 +13,7 @@ pub enum FlagsTab {
     #[default]
     Events,
     BadgesFly,
+    HiddenItems,
     Missables,
 }
 
@@ -39,6 +41,7 @@ pub fn ui(ui: &mut egui::Ui, doc: &mut Doc, state: &mut FlagsState) {
     ui.horizontal(|ui| {
         ui.selectable_value(&mut state.tab, FlagsTab::Events, "Events");
         ui.selectable_value(&mut state.tab, FlagsTab::BadgesFly, "Badges + Fly");
+        ui.selectable_value(&mut state.tab, FlagsTab::HiddenItems, "Hidden items");
         ui.selectable_value(&mut state.tab, FlagsTab::Missables, "Missables");
     });
     ui.separator();
@@ -46,6 +49,7 @@ pub fn ui(ui: &mut egui::Ui, doc: &mut Doc, state: &mut FlagsState) {
     match state.tab {
         FlagsTab::Events => events_tab(ui, doc, state),
         FlagsTab::BadgesFly => badges_fly_tab(ui, doc),
+        FlagsTab::HiddenItems => hidden_items_tab(ui, doc),
         FlagsTab::Missables => missables_tab(ui, doc),
     }
 }
@@ -134,6 +138,51 @@ fn badges_fly_tab(ui: &mut egui::Ui, doc: &mut Doc) {
             }
         });
     });
+    if touched {
+        doc.touch();
+    }
+}
+
+fn hidden_items_tab(ui: &mut egui::Ui, doc: &mut Doc) {
+    let mut touched = false;
+    ui.colored_label(
+        ui.visuals().warn_fg_color,
+        "Advanced: raw hidden-item pickup bits (wObtainedHiddenItemsFlags). A set bit means \
+         the hidden item was already collected; clear it to respawn the item. The bit → \
+         location mapping lives in the pokered disassembly (data/events/hidden_objects.asm); \
+         no names are available here.",
+    );
+    ui.add_space(4.0);
+    TableBuilder::new(ui)
+        .striped(true)
+        .column(Column::exact(60.0))
+        .column(Column::exact(70.0))
+        .column(Column::remainder())
+        .header(20.0, |mut header| {
+            header.col(|ui| {
+                ui.strong("Bit");
+            });
+            header.col(|ui| {
+                ui.strong("Collected");
+            });
+            header.col(|_| {});
+        })
+        .body(|body| {
+            body.rows(20.0, offsets::HIDDEN_ITEM_FLAGS_LEN * 8, |mut row| {
+                let bit = row.index();
+                row.col(|ui| {
+                    ui.monospace(format!("{bit}"));
+                });
+                row.col(|ui| {
+                    let mut value = doc.save.hidden_item_flag(bit);
+                    if ui.checkbox(&mut value, "").changed() {
+                        doc.save.set_hidden_item_flag(bit, value);
+                        touched = true;
+                    }
+                });
+                row.col(|_| {});
+            });
+        });
     if touched {
         doc.touch();
     }

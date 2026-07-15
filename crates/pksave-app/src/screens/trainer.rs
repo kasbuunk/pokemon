@@ -8,6 +8,14 @@ use crate::app::Doc;
 use crate::widgets;
 
 pub fn ui(ui: &mut egui::Ui, doc: &mut Doc) {
+    egui::ScrollArea::vertical()
+        .id_salt("trainer_screen")
+        .show(ui, |ui| {
+            body(ui, doc);
+        });
+}
+
+fn body(ui: &mut egui::Ui, doc: &mut Doc) {
     ui.heading("Trainer");
     ui.add_space(4.0);
     let mut touched = false;

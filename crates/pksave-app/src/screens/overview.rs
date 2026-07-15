@@ -2,6 +2,7 @@
 //! table (click a span to inspect it in the hex view).
 
 use egui_extras::{Column, TableBuilder};
+use pksave::gen1::pokemon::{MonView, PartyMon};
 use pksave::gen1::trainer::Badge;
 use pksave::Severity;
 

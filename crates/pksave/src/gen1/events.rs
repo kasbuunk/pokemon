@@ -2,7 +2,8 @@
 //! fly-unlocked towns and the raw game-progress region.
 //!
 //! All of these are pokered `flag_array`s — LSB-first bit fields
-//! addressed through [`flags::BitSlice`]. Bit indexes match the
+//! addressed through [`flags::BitSlice`](super::flags::BitSlice). Bit
+//! indexes match the
 //! `EVENT_*` / object constants in the disassembly; event flag *names*
 //! come from the generated [`EVENT_FLAG_NAMES`] table (2560 entries,
 //! `""` for the unnamed gaps).

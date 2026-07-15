@@ -19,23 +19,34 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - run: rustup target add wasm32-unknown-unknown
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo clippy -p pksave --target wasm32-unknown-unknown -- -D warnings
 
   test:
     runs-on: ubuntu-latest
+    env:
+      # More proptest iterations on main; keep PR feedback fast.
+      PROPTEST_CASES: ${{ github.ref == 'refs/heads/main' && '1024' || '256' }}
     steps:
       - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - run: cargo test --workspace
+
+  cargo-deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - run: cargo install --locked cargo-deny --version 0.20.2
+      - run: cargo deny check
 
   wasm-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - run: rustup target add wasm32-unknown-unknown
       - run: cargo build --release -p pksave-app --target wasm32-unknown-unknown
 
@@ -43,7 +54,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - run: cargo build --release -p pksave-app
       - uses: actions/upload-artifact@v4
         with:
@@ -59,7 +70,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Read pins
         id: pins
@@ -117,6 +128,9 @@ jobs:
         run: |
           cargo run -p xtask -- gen-tables --pokered build/pokered
           git diff --exit-code
+          # `git diff` only catches changes to tracked files; also fail if
+          # gen-tables produced new (untracked) generated files.
+          test -z "$(git status --porcelain crates/pksave/src/gen1/data/generated)"
 
       - name: Offsets match the symbol file
         run: cargo run -p xtask -- gen-offsets-check --sym build/rom/pokered.sym

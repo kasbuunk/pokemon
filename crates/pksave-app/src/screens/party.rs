@@ -1,10 +1,12 @@
 //! Party screen: the 6 slots plus a full detail editor for the selected
-//! mon. The "common record" editor (status, moves, DVs, stat exp, …) is
-//! shared with the box screen via [`MonSnapshot`] / [`MonEdit`].
+//! mon, and the daycare. The "common record" editor (status, moves, DVs,
+//! stat exp, …) is shared with the box screen via [`MonSnapshot`] /
+//! [`MonEdit`].
 
-use pksave::gen1::data::{BASE_STATS, INDEX_TO_DEX, MOVES, SPECIES_NAMES};
+use pksave::gen1::data::{BASE_STATS, INDEX_TO_DEX, MOVES, SPECIES_NAMES, TYPE_NAMES};
 use pksave::gen1::pokemon::{
-    PartyMonMut, STATUS_BURNED, STATUS_FROZEN, STATUS_PARALYZED, STATUS_POISONED, STATUS_SLEEP_MASK,
+    box_to_party, party_to_box, BoxMonView, MonMut, MonView, PartyMon, PartyMonMut, STATUS_BURNED,
+    STATUS_FROZEN, STATUS_PARALYZED, STATUS_POISONED, STATUS_SLEEP_MASK,
 };
 use pksave::gen1::stats::{self, Dvs};
 use pksave::gen1::{offsets, text};
@@ -37,33 +39,35 @@ pub struct MonSnapshot {
     pub pp: [u8; 4],
 }
 
-/// Copy the common fields out of any mon view/mut (they share getters
-/// by macro, not by trait).
-macro_rules! snapshot {
-    ($mon:expr) => {
+impl MonSnapshot {
+    /// Copy the common fields out of any mon view — party, box and
+    /// daycare records all share the [`MonView`] trait.
+    pub fn read(mon: &impl MonView) -> MonSnapshot {
         MonSnapshot {
-            species: $mon.species(),
-            current_hp: $mon.current_hp(),
-            box_level: $mon.box_level(),
-            status: $mon.status(),
-            types: $mon.types(),
-            catch_rate: $mon.catch_rate(),
-            moves: $mon.moves(),
-            ot_id: $mon.ot_id(),
-            exp: $mon.exp(),
-            stat_exps: $mon.stat_exps(),
-            dvs: $mon.dvs(),
-            pp: $mon.pp(),
+            species: mon.species(),
+            current_hp: mon.current_hp(),
+            box_level: mon.box_level(),
+            status: mon.status(),
+            types: mon.types(),
+            catch_rate: mon.catch_rate(),
+            moves: mon.moves(),
+            ot_id: mon.ot_id(),
+            exp: mon.exp(),
+            stat_exps: mon.stat_exps(),
+            dvs: mon.dvs(),
+            pp: mon.pp(),
         }
-    };
+    }
 }
-pub(crate) use snapshot;
 
-/// An edit to a common record field, applied by the caller to either a
-/// `PartyMonMut` or a `BoxMonMut`.
+/// An edit to a common record field, applied by [`apply_mon_edits`] to
+/// any [`MonMut`] (party, box or daycare record).
+#[derive(Clone, Copy)]
 pub enum MonEdit {
     CurrentHp(u16),
     Status(u8),
+    Types(u8, u8),
+    CatchRate(u8),
     Moves([u8; 4]),
     Pp([u8; 4]),
     OtId(u16),
@@ -71,22 +75,22 @@ pub enum MonEdit {
     Dvs(Dvs),
 }
 
-macro_rules! apply_edits {
-    ($mon:expr, $edits:expr) => {
-        for edit in $edits {
-            match edit {
-                $crate::screens::party::MonEdit::CurrentHp(v) => $mon.set_current_hp(v),
-                $crate::screens::party::MonEdit::Status(v) => $mon.set_status(v),
-                $crate::screens::party::MonEdit::Moves(v) => $mon.set_moves(v),
-                $crate::screens::party::MonEdit::Pp(v) => $mon.set_pp(v),
-                $crate::screens::party::MonEdit::OtId(v) => $mon.set_ot_id(v),
-                $crate::screens::party::MonEdit::StatExps(v) => $mon.set_stat_exps(v),
-                $crate::screens::party::MonEdit::Dvs(v) => $mon.set_dvs(v),
-            }
+/// Apply the edits queued by [`common_editor`] to any mutable mon view.
+pub fn apply_mon_edits(mon: &mut impl MonMut, edits: &[MonEdit]) {
+    for edit in edits {
+        match *edit {
+            MonEdit::CurrentHp(v) => mon.set_current_hp(v),
+            MonEdit::Status(v) => mon.set_status(v),
+            MonEdit::Types(t1, t2) => mon.set_types(t1, t2),
+            MonEdit::CatchRate(v) => mon.set_catch_rate(v),
+            MonEdit::Moves(v) => mon.set_moves(v),
+            MonEdit::Pp(v) => mon.set_pp(v),
+            MonEdit::OtId(v) => mon.set_ot_id(v),
+            MonEdit::StatExps(v) => mon.set_stat_exps(v),
+            MonEdit::Dvs(v) => mon.set_dvs(v),
         }
-    };
+    }
 }
-pub(crate) use apply_edits;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum StatusKind {
@@ -147,6 +151,26 @@ impl StatusKind {
     }
 }
 
+/// Picker over the valid Gen 1 type ids. Returns the new id, if changed.
+fn type_combo(ui: &mut egui::Ui, id_salt: impl egui::AsIdSalt, current: u8) -> Option<u8> {
+    let mut picked = None;
+    egui::ComboBox::from_id_salt(ui.id().with(id_salt))
+        .selected_text(widgets::type_label(current))
+        .width(90.0)
+        .show_ui(ui, |ui| {
+            for (id, name) in TYPE_NAMES.iter().enumerate() {
+                if name.is_empty() {
+                    continue;
+                }
+                let id = id as u8;
+                if ui.selectable_label(id == current, *name).clicked() && id != current {
+                    picked = Some(id);
+                }
+            }
+        });
+    picked
+}
+
 /// Editor for the fields common to party and box records. Pushes the
 /// requested changes into `edits`.
 pub fn common_editor(
@@ -157,11 +181,18 @@ pub fn common_editor(
 ) {
     ui.horizontal(|ui| {
         ui.label("Types:");
-        ui.strong(widgets::type_label(snap.types.0));
-        if snap.types.1 != snap.types.0 {
-            ui.strong(widgets::type_label(snap.types.1));
+        if let Some(t1) = type_combo(ui, (id_salt, "type1"), snap.types.0) {
+            edits.push(MonEdit::Types(t1, snap.types.1));
         }
-        ui.weak(format!("(catch rate {})", snap.catch_rate));
+        if let Some(t2) = type_combo(ui, (id_salt, "type2"), snap.types.1) {
+            edits.push(MonEdit::Types(snap.types.0, t2));
+        }
+        ui.label("Catch rate:");
+        let mut catch_rate = snap.catch_rate;
+        if widgets::byte_stepper(ui, &mut catch_rate, 0..=255) {
+            edits.push(MonEdit::CatchRate(catch_rate));
+        }
+        ui.weak("(picking a species resets these)");
         ui.separator();
         ui.label("OT ID:");
         let mut ot_id = snap.ot_id;
@@ -279,6 +310,14 @@ pub fn common_editor(
 }
 
 pub fn ui(ui: &mut egui::Ui, doc: &mut Doc, state: &mut PartyState) {
+    egui::ScrollArea::vertical()
+        .id_salt("party_screen")
+        .show(ui, |ui| {
+            party_body(ui, doc, state);
+        });
+}
+
+fn party_body(ui: &mut egui::Ui, doc: &mut Doc, state: &mut PartyState) {
     ui.heading("Party");
     ui.add_space(4.0);
     let mut touched = false;
@@ -375,11 +414,17 @@ pub fn ui(ui: &mut egui::Ui, doc: &mut Doc, state: &mut PartyState) {
                 return;
             }
             let i = state.selected;
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                touched |= detail_editor(ui, doc, i);
-            });
+            touched |= detail_editor(ui, doc, i);
         });
     });
+
+    // ---- daycare ----
+    ui.add_space(12.0);
+    egui::CollapsingHeader::new("Daycare")
+        .default_open(doc.save.daycare().is_some())
+        .show(ui, |ui| {
+            touched |= daycare_section(ui, doc);
+        });
 
     if touched {
         doc.touch();
@@ -404,23 +449,24 @@ fn add_mon(doc: &mut Doc, internal: u8) -> bool {
     } else {
         SPECIES_NAMES[usize::from(dex)].to_owned()
     };
+    let ot = player_ot_name(doc);
+    doc.save.party_mut().add(&record, &ot, &nickname).is_ok()
+}
+
+/// The player's name if it encodes, else a safe fallback OT.
+fn player_ot_name(doc: &Doc) -> String {
     let ot = doc.save.player_name();
-    let ot = if text::encode(&ot, offsets::NAME_LEN).is_ok() {
+    if text::encode(&ot, offsets::NAME_LEN).is_ok() {
         ot
     } else {
         "TRAINER".to_owned()
-    };
-    doc.save.party_mut().add(&record, &ot, &nickname).is_ok()
+    }
 }
 
 /// The per-slot detail editor. Returns whether anything changed.
 fn detail_editor(ui: &mut egui::Ui, doc: &mut Doc, i: usize) -> bool {
     let mut touched = false;
-    let snap = {
-        let party = doc.save.party();
-        let mon = party.mon(i);
-        snapshot!(mon)
-    };
+    let snap = MonSnapshot::read(&doc.save.party().mon(i));
     let (nickname, ot_name, level, stats_now) = {
         let party = doc.save.party();
         let mon = party.mon(i);
@@ -437,8 +483,7 @@ fn detail_editor(ui: &mut egui::Ui, doc: &mut Doc, i: usize) -> bool {
             ],
         )
     };
-    let dex = INDEX_TO_DEX[usize::from(snap.species)];
-    let base = BASE_STATS[usize::from(dex)];
+    let base = BASE_STATS[usize::from(INDEX_TO_DEX[usize::from(snap.species)])];
 
     // ---- identity ----
     ui.horizontal(|ui| {
@@ -479,8 +524,21 @@ fn detail_editor(ui: &mut egui::Ui, doc: &mut Doc, i: usize) -> bool {
             touched = true;
         }
         ui.weak("(sets exp & stats coherently, full-heals)");
-        ui.separator();
-        ui.label(format!("Exp: {}", snap.exp));
+    });
+    ui.horizontal(|ui| {
+        ui.label("Exp:");
+        let mut exp = snap.exp;
+        if ui
+            .add(
+                egui::DragValue::new(&mut exp)
+                    .range(0..=0x00FF_FFFFu32)
+                    .speed(100),
+            )
+            .changed()
+        {
+            doc.save.party_mut().mon_mut(i).set_exp(exp);
+            touched = true;
+        }
         if ui
             .button("Sync from level")
             .on_hover_text("exp := exp_for_level(growth curve, level)")
@@ -502,7 +560,7 @@ fn detail_editor(ui: &mut egui::Ui, doc: &mut Doc, i: usize) -> bool {
     if !edits.is_empty() {
         let mut party = doc.save.party_mut();
         let mut mon = party.mon_mut(i);
-        apply_edits!(mon, edits);
+        apply_mon_edits(&mut mon, &edits);
         touched = true;
     }
 
@@ -542,6 +600,167 @@ fn detail_editor(ui: &mut egui::Ui, doc: &mut Doc, i: usize) -> bool {
             .clicked()
         {
             doc.save.party_mut().mon_mut(i).recalculate_stats();
+            touched = true;
+        }
+    });
+
+    touched
+}
+
+/// The daycare occupant editor (box-format record, nickname, OT) plus
+/// deposit-from-party / take-to-party. Returns whether anything changed.
+fn daycare_section(ui: &mut egui::Ui, doc: &mut Doc) -> bool {
+    let mut touched = false;
+    let occupant = doc.save.daycare().map(|view| {
+        let mut record = [0u8; offsets::BOX_MON_SIZE];
+        record.copy_from_slice(view.mon().as_bytes());
+        (record, view.nickname(), view.ot_name())
+    });
+
+    let Some((record, nickname, ot_name)) = occupant else {
+        ui.weak("The daycare is empty.");
+        let party_len = doc.save.party().len();
+        if party_len == 0 {
+            return false;
+        }
+        ui.add_space(4.0);
+        ui.strong("Deposit from party");
+        for p in 0..party_len {
+            let (nick, ot, label, party_record) = {
+                let party = doc.save.party();
+                let mon = party.mon(p);
+                let mut rec = [0u8; offsets::PARTY_MON_SIZE];
+                rec.copy_from_slice(mon.as_bytes());
+                (
+                    party.nickname(p),
+                    party.ot_name(p),
+                    format!(
+                        "Lv.{} {}",
+                        mon.level(),
+                        widgets::species_label(mon.species())
+                    ),
+                    rec,
+                )
+            };
+            let mut deposited = false;
+            ui.horizontal(|ui| {
+                ui.label(format!("{nick} — {label}"));
+                if ui.button("Deposit").clicked() {
+                    // The level moves into the box level byte, as in-game.
+                    let box_record = party_to_box(&party_record);
+                    if doc
+                        .save
+                        .set_daycare(Some((&box_record, &ot, &nick)))
+                        .is_ok()
+                    {
+                        doc.save.party_mut().remove(p);
+                        deposited = true;
+                        touched = true;
+                    }
+                }
+            });
+            if deposited {
+                break;
+            }
+        }
+        return touched;
+    };
+
+    let snap = MonSnapshot::read(&BoxMonView::new(&record));
+
+    ui.horizontal(|ui| {
+        ui.label("Species:");
+        if let Some(internal) = widgets::species_combo(ui, "daycare_species", snap.species) {
+            let new_base = BASE_STATS[usize::from(INDEX_TO_DEX[usize::from(internal)])];
+            if let Some(mut daycare) = doc.save.daycare_mut() {
+                let mut mon = daycare.mon_mut();
+                mon.set_species(internal);
+                mon.set_types(new_base.type1, new_base.type2);
+                mon.set_catch_rate(new_base.catch_rate);
+                touched = true;
+            }
+        }
+        ui.label("Nickname:");
+        if let Some(name) = widgets::name_edit(ui, "daycare_nick", &nickname) {
+            if let Some(mut daycare) = doc.save.daycare_mut() {
+                if daycare.set_nickname(&name).is_ok() {
+                    touched = true;
+                }
+            }
+        }
+        ui.label("OT:");
+        if let Some(name) = widgets::name_edit(ui, "daycare_ot", &ot_name) {
+            if let Some(mut daycare) = doc.save.daycare_mut() {
+                if daycare.set_ot_name(&name).is_ok() {
+                    touched = true;
+                }
+            }
+        }
+    });
+
+    ui.horizontal(|ui| {
+        ui.label("Level (box):");
+        let mut level = snap.box_level;
+        if widgets::byte_stepper(ui, &mut level, 1..=100) {
+            if let Some(mut daycare) = doc.save.daycare_mut() {
+                daycare.mon_mut().set_box_level(level);
+                touched = true;
+            }
+        }
+        ui.separator();
+        ui.label("Exp:");
+        let mut exp = snap.exp;
+        if ui
+            .add(
+                egui::DragValue::new(&mut exp)
+                    .range(0..=0x00FF_FFFFu32)
+                    .speed(100),
+            )
+            .changed()
+        {
+            if let Some(mut daycare) = doc.save.daycare_mut() {
+                daycare.mon_mut().set_exp(exp);
+                touched = true;
+            }
+        }
+        ui.weak("Stats are recomputed when it re-joins the party.");
+    });
+
+    let mut edits = Vec::new();
+    common_editor(ui, "daycare", &snap, &mut edits);
+    if !edits.is_empty() {
+        if let Some(mut daycare) = doc.save.daycare_mut() {
+            let mut mon = daycare.mon_mut();
+            apply_mon_edits(&mut mon, &edits);
+            touched = true;
+        }
+    }
+
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        let party_full = doc.save.party().len() >= offsets::PARTY_CAPACITY;
+        if ui
+            .add_enabled(!party_full, egui::Button::new("Take → party"))
+            .on_hover_text("Move the mon back to the party (stats recalculated, as in-game)")
+            .clicked()
+        {
+            let party_record = box_to_party(&record);
+            if doc
+                .save
+                .party_mut()
+                .add(&party_record, &ot_name, &nickname)
+                .is_ok()
+            {
+                let _ = doc.save.set_daycare(None);
+                touched = true;
+            }
+        }
+        if ui
+            .button("🗑 Clear daycare")
+            .on_hover_text("Mark the daycare empty (the mon is lost, as when picked up in-game)")
+            .clicked()
+        {
+            let _ = doc.save.set_daycare(None);
             touched = true;
         }
     });

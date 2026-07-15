@@ -5,6 +5,7 @@
 //! HM01-HM05 and $C9-$FF are TM01-TM55, named the way the game
 //! renders them.
 
+/// Item display names indexed by item id (`""` for invalid/glitch ids).
 pub const ITEM_NAMES: [&str; 256] = [
     "",
     "MASTER BALL",  // 0x01

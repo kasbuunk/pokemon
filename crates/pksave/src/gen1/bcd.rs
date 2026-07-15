@@ -15,7 +15,12 @@ pub enum BcdError {
     /// A nibble was not a decimal digit. `nibble` is the offending 4-bit
     /// value (0xA..=0xF); `byte_index` the byte it came from.
     #[error("invalid BCD nibble 0x{nibble:X} in byte {byte_index}")]
-    InvalidNibble { byte_index: usize, nibble: u8 },
+    InvalidNibble {
+        /// Index of the offending byte within the decoded field.
+        byte_index: usize,
+        /// The offending 4-bit value (0xA..=0xF).
+        nibble: u8,
+    },
     /// The value needs more decimal digits than the output (or `u32`)
     /// can hold.
     #[error("value needs more decimal digits than the field can hold")]
@@ -88,14 +93,14 @@ mod tests {
     #[test]
     fn rejects_invalid_nibbles() {
         assert_eq!(
-            decode(&[0xFA]).unwrap_err(),
+            decode(&[0xFA]).expect_err("invalid nibble"),
             BcdError::InvalidNibble {
                 byte_index: 0,
                 nibble: 0xF
             }
         );
         assert_eq!(
-            decode(&[0x12, 0x3A]).unwrap_err(),
+            decode(&[0x12, 0x3A]).expect_err("invalid nibble"),
             BcdError::InvalidNibble {
                 byte_index: 1,
                 nibble: 0xA
@@ -121,16 +126,19 @@ mod tests {
 
     #[test]
     fn encode_rejects_overflow() {
-        assert_eq!(encode(1_000_000, 3).unwrap_err(), BcdError::Overflow);
-        assert_eq!(encode(100, 1).unwrap_err(), BcdError::Overflow);
-        assert_eq!(encode(1, 0).unwrap_err(), BcdError::Overflow);
+        assert_eq!(
+            encode(1_000_000, 3).expect_err("overflows"),
+            BcdError::Overflow
+        );
+        assert_eq!(encode(100, 1).expect_err("overflows"), BcdError::Overflow);
+        assert_eq!(encode(1, 0).expect_err("overflows"), BcdError::Overflow);
     }
 
     #[test]
     fn decode_rejects_u32_overflow() {
         // 10 digits of 9s exceed u32::MAX (4294967295).
         assert_eq!(
-            decode(&[0x99, 0x99, 0x99, 0x99, 0x99]).unwrap_err(),
+            decode(&[0x99, 0x99, 0x99, 0x99, 0x99]).expect_err("overflows"),
             BcdError::Overflow
         );
         // But a 5-byte value within range is fine.

@@ -12,6 +12,35 @@ pub fn validate_name(s: &str) -> Result<(), TextError> {
     text::encode(s, NAME_LEN).map(|_| ())
 }
 
+/// What [`name_edit`] should do with the in-progress buffer this frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameOutcome {
+    /// Apply the buffer to the save: it just changed, encodes, and
+    /// differs from the stored name.
+    Apply,
+    /// Overwrite the buffer with the stored name (external change, e.g.
+    /// Revert, while the field is not being edited).
+    Resync,
+    /// Leave both alone (unchanged, invalid, or mid-edit).
+    Keep,
+}
+
+/// The pure decision step of [`name_edit`]: `Apply` only on
+/// changed + valid + different.
+pub fn name_outcome(buf: &str, current: &str, changed: bool, has_focus: bool) -> NameOutcome {
+    if changed {
+        if validate_name(buf).is_ok() && buf != current {
+            NameOutcome::Apply
+        } else {
+            NameOutcome::Keep
+        }
+    } else if !has_focus && buf != current {
+        NameOutcome::Resync
+    } else {
+        NameOutcome::Keep
+    }
+}
+
 /// Text editor for a Gen 1 name field. Keeps the in-progress string in
 /// egui temp memory; returns `Some(new_name)` only when the content is
 /// encodable and differs from `current`. Invalid text gets a red outline
@@ -26,14 +55,10 @@ pub fn name_edit(ui: &mut egui::Ui, id_salt: impl egui::AsIdSalt, current: &str)
     let response = ui.add(egui::TextEdit::singleline(&mut buf).desired_width(120.0));
 
     let mut result = None;
-    if response.changed() {
-        match validate_name(&buf) {
-            Ok(()) if buf != current => result = Some(buf.clone()),
-            _ => {}
-        }
-    } else if !response.has_focus() && buf != current {
-        // Not being edited: track external changes (e.g. Revert).
-        buf = current.to_owned();
+    match name_outcome(&buf, current, response.changed(), response.has_focus()) {
+        NameOutcome::Apply => result = Some(buf.clone()),
+        NameOutcome::Resync => buf = current.to_owned(),
+        NameOutcome::Keep => {}
     }
 
     if let Some(error) = error {
@@ -238,6 +263,33 @@ mod tests {
         ));
         // '@' is the terminator glyph and deliberately unencodable.
         assert!(validate_name("A@B").is_err());
+    }
+
+    #[test]
+    fn name_outcome_applies_only_changed_valid_different() {
+        // Valid, changed, different: apply.
+        assert_eq!(name_outcome("RED", "BLUE", true, true), NameOutcome::Apply);
+        // Invalid text is never applied.
+        assert_eq!(name_outcome("naïve", "BLUE", true, true), NameOutcome::Keep);
+        assert_eq!(
+            name_outcome("ABCDEFGHIJK", "BLUE", true, true),
+            NameOutcome::Keep
+        );
+        // Changed back to the stored value: nothing to apply.
+        assert_eq!(name_outcome("BLUE", "BLUE", true, true), NameOutcome::Keep);
+    }
+
+    #[test]
+    fn name_outcome_resyncs_external_changes_when_unfocused() {
+        // Not editing, buffer differs (e.g. after Revert): resync.
+        assert_eq!(
+            name_outcome("OLD", "REVERTED", false, false),
+            NameOutcome::Resync
+        );
+        // Mid-edit (focused): leave the user's buffer alone.
+        assert_eq!(name_outcome("OL", "OLD", false, true), NameOutcome::Keep);
+        // In sync: nothing to do.
+        assert_eq!(name_outcome("RED", "RED", false, false), NameOutcome::Keep);
     }
 
     #[test]

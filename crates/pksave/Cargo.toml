@@ -6,6 +6,9 @@ license.workspace = true
 repository.workspace = true
 description = "Fault-tolerant Pokémon Generation 1 (Red/Blue/Yellow) save file library"
 
+[lints]
+workspace = true
+
 [dependencies]
 thiserror = "2"
 

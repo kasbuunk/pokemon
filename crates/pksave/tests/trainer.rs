@@ -126,6 +126,22 @@ fn coins_round_trip_and_reject_over_9999() {
     );
 }
 
+#[test]
+fn coins_getter_reports_invalid_bcd_and_lossy_clamps_the_nibble() {
+    let mut bytes = blank().to_bytes();
+    bytes[offsets::COINS] = 0xA5; // high nibble invalid
+    let save = SaveFile::from_bytes(bytes).expect("length is valid");
+    assert_eq!(
+        save.coins(),
+        Err(BcdError::InvalidNibble {
+            byte_index: 0,
+            nibble: 0xA
+        })
+    );
+    // decode_lossy clamps invalid nibbles to 9: 0xA5 0x00 reads as 9500.
+    assert_eq!(save.coins_lossy(), 9500);
+}
+
 // ---- trainer id ----
 
 #[test]
@@ -202,6 +218,39 @@ fn options_typed_helpers() {
     save.set_options(0x02);
     assert_eq!(save.text_speed(), None);
     assert_eq!(save.options(), 0x02);
+}
+
+#[test]
+fn text_speed_decodes_slow_from_the_raw_options_nibble() {
+    // Nibble 5 of wOptions (0x2601) is Slow (FORMAT.md).
+    let mut bytes = blank().to_bytes();
+    bytes[offsets::OPTIONS] = 5;
+    let save = SaveFile::from_bytes(bytes).expect("length is valid");
+    assert_eq!(save.text_speed(), Some(TextSpeed::Slow));
+}
+
+#[test]
+fn battle_option_bits_clear_without_disturbing_other_bits() {
+    let mut save = blank();
+    save.set_battle_animations_off(true);
+    save.set_battle_style_set(true);
+    assert_eq!(save.options(), 0x80 | 0x40 | 3);
+
+    save.set_battle_animations_off(false);
+    assert!(!save.battle_animations_off());
+    assert_eq!(
+        save.options(),
+        0x40 | 3,
+        "clearing bit 7 must keep bit 6 and the speed nibble"
+    );
+
+    save.set_battle_style_set(false);
+    assert!(!save.battle_style_set());
+    assert_eq!(
+        save.options(),
+        3,
+        "clearing bit 6 must keep the speed nibble"
+    );
 }
 
 // ---- pikachu friendship ----
@@ -300,14 +349,14 @@ fn every_setter_marks_the_file_edited() {
     let setters: Vec<Setter> = vec![
         (
             "player_name",
-            Box::new(|s| s.set_player_name("A").map(|_| ()).unwrap()),
+            Box::new(|s| s.set_player_name("A").map(|_| ()).expect("encodable")),
         ),
         (
             "rival_name",
-            Box::new(|s| s.set_rival_name("B").map(|_| ()).unwrap()),
+            Box::new(|s| s.set_rival_name("B").map(|_| ()).expect("encodable")),
         ),
-        ("money", Box::new(|s| s.set_money(1).unwrap())),
-        ("coins", Box::new(|s| s.set_coins(1).unwrap())),
+        ("money", Box::new(|s| s.set_money(1).expect("in range"))),
+        ("coins", Box::new(|s| s.set_coins(1).expect("in range"))),
         ("player_id", Box::new(|s| s.set_player_id(1))),
         ("badges", Box::new(|s| s.set_badges(1))),
         ("badge", Box::new(|s| s.set_badge(Badge::Earth, true))),

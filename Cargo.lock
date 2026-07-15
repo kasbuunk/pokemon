@@ -2715,10 +2715,13 @@ dependencies = [
  "egui",
  "egui_extras",
  "env_logger",
+ "js-sys",
  "log",
  "pksave",
  "pollster 1.0.1",
  "rfd",
+ "tempfile",
+ "thiserror 2.0.18",
  "wasm-bindgen-futures",
  "web-sys",
 ]

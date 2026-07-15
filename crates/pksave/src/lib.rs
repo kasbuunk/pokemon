@@ -6,29 +6,39 @@
 //! `wasm32-unknown-unknown`.
 //!
 //! The anti-corruption model: the entire input buffer is held verbatim and
-//! every edit mutates only the bytes of the field being changed; checksums
-//! are recomputed only for regions that were actually modified, so an
-//! untouched file always round-trips byte-identically. See `docs/FORMAT.md`
-//! in the repository for the format reference.
+//! every edit mutates only the bytes of the field being changed. A single
+//! global *edited* flag gates serialization: an untouched file always
+//! round-trips byte-identically, while `to_bytes()` on an edited file
+//! recomputes all 15 checksums — except regions pinned via a checksum
+//! override, whose stored byte is kept verbatim. See `docs/FORMAT.md` in
+//! the repository for the format reference.
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 pub mod gen1;
 
 /// Severity of a [`Diagnostic`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
+    /// Informational note; the file is fine (e.g. a detected game variant).
     Info,
+    /// Something is off (e.g. a stale bank copy or bad checksum) but the
+    /// file remains fully editable.
     Warning,
+    /// Structurally wrong data that the editor tolerates but the game may
+    /// not; still never blocks editing.
     Error,
 }
 
 /// A non-fatal finding about a save file. Diagnostics never block editing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
+    /// How serious the finding is.
     pub severity: Severity,
     /// Stable machine-readable code, e.g. `W-CHECKSUM-MAIN`.
     pub code: &'static str,
+    /// Human-readable description of the finding.
     pub message: String,
     /// Byte range in the file this concerns, if applicable.
     pub span: Option<core::ops::Range<usize>>,
@@ -41,6 +51,7 @@ pub trait SaveGame {
     fn game_label(&self) -> &str;
     /// Current diagnostics for the buffer.
     fn diagnostics(&self) -> Vec<Diagnostic>;
-    /// Serialize back to bytes (recomputing checksums for edited regions).
+    /// Serialize back to bytes (recomputing checksums once anything was
+    /// edited, minus any pinned regions).
     fn to_bytes(&self) -> Vec<u8>;
 }

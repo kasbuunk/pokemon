@@ -3,7 +3,7 @@
 use pksave::gen1::data::DEX_TO_INDEX;
 use pksave::gen1::offsets;
 use pksave::gen1::party::PartyError;
-use pksave::gen1::pokemon::PartyMonMut;
+use pksave::gen1::pokemon::{MonMut, MonView, PartyMon, PartyMonMut};
 use pksave::gen1::save::SaveFile;
 
 const PARTY_END: usize = offsets::PARTY + offsets::PARTY_LEN;
@@ -289,6 +289,25 @@ fn edits_mark_the_save_edited_so_checksums_get_fixed() {
             .iter()
             .all(|d| d.code != "W-CHECKSUM-MAIN"),
         "main checksum repaired on serialize"
+    );
+}
+
+#[test]
+fn party_view_and_party_mut_agree_on_is_empty() {
+    let mut save = blank_save();
+    assert!(save.party().is_empty(), "PartyView::is_empty on empty save");
+    assert!(
+        save.party_mut().is_empty(),
+        "PartyMut::is_empty on empty save"
+    );
+
+    save.party_mut()
+        .add(&make_mon(25, 42), "ASH", "SPARKY")
+        .expect("room");
+    assert!(!save.party().is_empty(), "PartyView::is_empty after an add");
+    assert!(
+        !save.party_mut().is_empty(),
+        "PartyMut::is_empty after an add"
     );
 }
 

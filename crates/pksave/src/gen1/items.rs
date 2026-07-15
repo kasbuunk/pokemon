@@ -69,7 +69,10 @@ pub const PC_LIST: ItemListSpec = ItemListSpec {
 pub enum ItemError {
     /// The list already holds `capacity` entries.
     #[error("item list is full ({capacity} slots)")]
-    CapacityFull { capacity: usize },
+    CapacityFull {
+        /// Capacity of the list that was full (20 bag / 50 PC).
+        capacity: usize,
+    },
 }
 
 /// Read-only view of one item list.

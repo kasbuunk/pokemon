@@ -10,7 +10,7 @@ use pksave::gen1::checksum;
 use pksave::gen1::data::{DEX_TO_INDEX, INDEX_TO_DEX, MAP_NAMES};
 use pksave::gen1::detect::detect_variant;
 use pksave::gen1::offsets;
-use pksave::gen1::pokemon::PartyMonMut;
+use pksave::gen1::pokemon::{MonMut, PartyMonMut};
 use pksave::gen1::save::{GameVariant, SaveFile};
 use pksave::{Diagnostic, Severity};
 
@@ -226,6 +226,22 @@ fn desynced_current_box_copies() {
     // ...until an explicit sync reconciles the copies.
     save.sync_current_box_to_bank();
     assert!(with_code(&save, "W-BOX-STALE").is_empty());
+}
+
+#[test]
+fn corrupt_current_box_number_skips_the_stale_check() {
+    // Stored current-box number 12 (bit 7 = initialized) points past the
+    // last box; diagnose() must not panic and must skip W-BOX-STALE even
+    // though a bank copy differs from the working copy.
+    let save = broken(true, |b| {
+        b[offsets::CURRENT_BOX_NUM] = 0x8C;
+        b[offsets::box_offset(0) + 0x20] = 0x33; // would be "stale" for box 0
+    });
+    let diags = save.diagnostics();
+    assert!(
+        diags.iter().all(|d| d.code != "W-BOX-STALE"),
+        "W-BOX-STALE must be skipped for an out-of-range box number: {diags:?}"
+    );
 }
 
 #[test]

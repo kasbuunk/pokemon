@@ -6,7 +6,13 @@ use pksave::gen1::pokedex::DEX_COUNT;
 
 use crate::app::Doc;
 
-pub fn ui(ui: &mut egui::Ui, doc: &mut Doc) {
+#[derive(Default)]
+pub struct PokedexState {
+    /// "Clear all" was clicked once; waiting for the confirming click.
+    pub confirm_clear: bool,
+}
+
+pub fn ui(ui: &mut egui::Ui, doc: &mut Doc, state: &mut PokedexState) {
     ui.heading("Pokédex");
     ui.add_space(4.0);
     let mut touched = false;
@@ -20,14 +26,26 @@ pub fn ui(ui: &mut egui::Ui, doc: &mut Doc) {
         ui.separator();
         if ui.button("Complete Dex").clicked() {
             doc.save.complete_dex();
+            state.confirm_clear = false;
             touched = true;
         }
-        if ui.button("Clear all").clicked() {
-            for dex in 1..=DEX_COUNT {
-                doc.save.set_dex_owned(dex, false);
-                doc.save.set_dex_seen(dex, false);
+        if !state.confirm_clear {
+            if ui.button("Clear all").clicked() {
+                state.confirm_clear = true;
             }
-            touched = true;
+        } else {
+            ui.colored_label(ui.visuals().warn_fg_color, "Clear every seen/owned flag?");
+            if ui.button("Yes, clear all").clicked() {
+                for dex in 1..=DEX_COUNT {
+                    doc.save.set_dex_owned(dex, false);
+                    doc.save.set_dex_seen(dex, false);
+                }
+                state.confirm_clear = false;
+                touched = true;
+            }
+            if ui.button("Cancel").clicked() {
+                state.confirm_clear = false;
+            }
         }
     });
     ui.add_space(4.0);
