@@ -1,0 +1,21 @@
+---
+source: crates/pksave/tests/diagnostics.rs
+expression: "rendered.join(\"\\n\")"
+---
+Warning W-DEX-RANGE @ 0x25B5..0x25B6 : Pokédex owned bitfield has bit 151 set; only entries 1-151 exist
+Warning W-ITEMS-UNKNOWN-ID @ 0x25CA..0x25CB : bag entry 0 has unknown item id 0x00
+Warning W-ITEMS-QTY-ZERO @ 0x25CB..0x25CC : bag entry 0 has quantity 0
+Warning W-BCD-MONEY @ 0x25F3..0x25F6 : money field holds invalid BCD (a nibble above 9)
+Warning W-TEXT-UNTERMINATED @ 0x25F6..0x2601 : rival name has no 0x50 text terminator
+Warning W-MAP-UNKNOWN @ 0x260A..0x260B : current map id 0xFF is not a map; the game may crash on load
+Warning W-BOX-INIT @ 0x284C..0x284D : boxes-initialized flag (bit 7 of wCurrentBoxNum) is clear: the game will treat the box banks as uninitialized and wipe all boxes on load
+Warning W-SPECIES-INVALID @ 0x2D0B..0x2D0C : daycare is in use but its mon species 0x1F is not a valid Pokémon
+Warning W-SPECIES-INVALID @ 0x2F34..0x2F35 : party slot 0 species 0x1F is not a valid Pokémon
+Warning W-LEVEL-RANGE @ 0x2F55..0x2F56 : party slot 0 level 120 is above the legitimate maximum 100
+Warning W-CHECKSUM-MAIN @ 0x3523..0x3524 : main data checksum mismatch: stored 0x65, computed 0x4D
+Warning W-BOX-STALE @ 0x4000..0x4462 : bank copy of current box 1 differs from the working copy at 0x30C0; the working copy is authoritative (common in real saves — the game only flushes on box switch); sync_current_box_to_bank() reconciles them
+Warning W-CHECKSUM-BOXBANK2 @ 0x5A4C..0x5A4D : bank 2 all-boxes checksum mismatch: stored 0x05, computed 0xC1
+Warning W-CHECKSUM-BOX1 @ 0x5A4D..0x5A4E : box 1 checksum mismatch: stored 0x00, computed 0xBC
+Warning W-BOX-SENTINEL @ 0x75EB..0x75EC : box 12 species list is not 0xFF-terminated after entry 0 (found 0x07)
+Warning W-CHECKSUM-BOXBANK3 @ 0x7A4C..0x7A4D : bank 3 all-boxes checksum mismatch: stored 0x05, computed 0xFD
+Warning W-CHECKSUM-BOX12 @ 0x7A52..0x7A53 : box 12 checksum mismatch: stored 0x00, computed 0xF8

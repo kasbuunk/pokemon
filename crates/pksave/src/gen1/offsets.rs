@@ -103,10 +103,12 @@ pub const SAFARI_STEPS: usize = 0x29B9;
 pub const RIVAL_STARTER: usize = 0x29C1;
 /// `wPlayerStarter` $D717 (internal species index).
 pub const PLAYER_STARTER: usize = 0x29C3;
-/// `wEventFlags` $D747, 64 bytes (NUM_EVENTS = 508 bits; includes trainer-battled flags).
+/// `wEventFlags` $D747, 320 bytes (`flag_array NUM_EVENTS`, NUM_EVENTS = $A00 =
+/// 2560 bits; 507 named events allocated sparsely per map, last used bit 2522;
+/// includes trainer-battled flags). Names: `data::generated::events`.
 pub const EVENT_FLAGS: usize = 0x29F3;
-pub const EVENT_FLAGS_LEN: usize = 64;
-pub const NUM_EVENTS: usize = 508;
+pub const EVENT_FLAGS_LEN: usize = 320;
+pub const NUM_EVENTS: usize = 2560;
 /// `wPlayTimeHours` $DA41.
 pub const PLAY_TIME_HOURS: usize = 0x2CED;
 /// `wPlayTimeMaxed` $DA42.

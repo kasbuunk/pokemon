@@ -86,7 +86,7 @@ checksummed.
 | 0x29B9 | wSafariSteps $D70D | 2 | Safari steps remaining |
 | 0x29C1 | wRivalStarter $D715 | 1 | Rival's starter species (internal index) |
 | 0x29C3 | wPlayerStarter $D717 | 1 | Player's starter species (internal index) |
-| 0x29F3 | wEventFlags $D747 | 64 | Event flags, NUM_EVENTS = 508 bits — story milestones AND one flag per battled trainer (names in pokered `constants/event_constants.asm`) |
+| 0x29F3 | wEventFlags $D747 | 320 | Event flags (`flag_array NUM_EVENTS`, NUM_EVENTS = $A00 = 2560 bits; 507 named events allocated sparsely per map, last used bit 2522) — story milestones AND one flag per battled trainer (names in pokered `constants/event_constants.asm`) |
 | 0x2CED | wPlayTimeHours $DA41 | 1 | Play time hours |
 | 0x2CEE | wPlayTimeMaxed $DA42 | 1 | Play time maxed flag |
 | 0x2CEF | wPlayTimeMinutes $DA43 | 1 | Minutes |
@@ -122,8 +122,8 @@ it matters to the game on load.
 +0x000  1    count (0–20)
 +0x001  21   species list + 0xFF
 +0x016  660  20 × 33-byte box mon
-+0x2A2  220  20 × 11-byte OT name
-+0x37E  220  20 × 11-byte nickname
++0x2AA  220  20 × 11-byte OT name (wBoxMonOT $DD2A)
++0x386  220  20 × 11-byte nickname (wBoxMonNicks $DE06)
 ```
 
 The in-game "current box" lives at 0x30C0 and is written back to its bank slot

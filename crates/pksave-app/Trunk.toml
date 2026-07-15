@@ -1,0 +1,9 @@
+[build]
+target = "index.html"
+# Wasm-only build; keep the native-only deps out of the wasm graph.
+# (cargo resolves per-target automatically; nothing extra needed here.)
+
+[serve]
+# Local dev: `trunk serve` in this directory.
+addresses = ["127.0.0.1"]
+port = 8080
