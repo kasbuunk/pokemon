@@ -18,8 +18,8 @@ use core::ops::Range;
 
 use thiserror::Error;
 
-use super::{checksum, offsets, text};
-use crate::{Diagnostic, SaveGame, Severity};
+use super::{checksum, offsets, text, validate};
+use crate::{Diagnostic, SaveGame};
 
 /// Which Gen 1 cartridge a save targets. The layout is identical
 /// (see `docs/FORMAT.md` § Red/Blue vs Yellow); the variant only changes
@@ -177,47 +177,11 @@ impl SaveFile {
         "Pokémon Red/Blue/Yellow (Gen 1)"
     }
 
-    /// Non-fatal findings: one warning per checksum mismatch.
+    /// Non-fatal findings: the full catalogue of [`validate::diagnose`]
+    /// (checksums, counts/sentinels, species/level ranges, item lists,
+    /// BCD, text terminators, box-initialization hazards, …).
     pub fn diagnostics(&self) -> Vec<Diagnostic> {
-        const BOX_CODES: [&str; offsets::NUM_BOXES] = [
-            "W-CHECKSUM-BOX1",
-            "W-CHECKSUM-BOX2",
-            "W-CHECKSUM-BOX3",
-            "W-CHECKSUM-BOX4",
-            "W-CHECKSUM-BOX5",
-            "W-CHECKSUM-BOX6",
-            "W-CHECKSUM-BOX7",
-            "W-CHECKSUM-BOX8",
-            "W-CHECKSUM-BOX9",
-            "W-CHECKSUM-BOX10",
-            "W-CHECKSUM-BOX11",
-            "W-CHECKSUM-BOX12",
-        ];
-        checksum::verify(&self.raw)
-            .into_iter()
-            .map(|m| {
-                let (code, what) = match m.region {
-                    checksum::Region::Main => ("W-CHECKSUM-MAIN", "main data".to_string()),
-                    checksum::Region::Bank2AllBoxes => {
-                        ("W-CHECKSUM-BOXBANK2", "bank 2 all-boxes".to_string())
-                    }
-                    checksum::Region::Bank3AllBoxes => {
-                        ("W-CHECKSUM-BOXBANK3", "bank 3 all-boxes".to_string())
-                    }
-                    checksum::Region::Box(n) => (BOX_CODES[n], format!("box {}", n + 1)),
-                };
-                let at = m.region.checksum_offset();
-                Diagnostic {
-                    severity: Severity::Warning,
-                    code,
-                    message: format!(
-                        "{what} checksum mismatch: stored 0x{:02X}, computed 0x{:02X}",
-                        m.stored, m.computed
-                    ),
-                    span: Some(at..at + 1),
-                }
-            })
-            .collect()
+        validate::diagnose(self)
     }
 }
 
@@ -346,9 +310,13 @@ mod tests {
     #[test]
     fn diagnostics_report_checksum_mismatches_with_codes_and_spans() {
         let save = SaveFile::from_bytes(vec![0u8; 0x8000]).expect("length is valid");
-        let diags = save.diagnostics();
+        let diags: Vec<Diagnostic> = save
+            .diagnostics()
+            .into_iter()
+            .filter(|d| d.code.starts_with("W-CHECKSUM-"))
+            .collect();
         assert_eq!(diags.len(), 15);
-        assert!(diags.iter().all(|d| d.severity == Severity::Warning));
+        assert!(diags.iter().all(|d| d.severity == crate::Severity::Warning));
         let find = |code: &str| {
             diags
                 .iter()
@@ -379,11 +347,17 @@ mod tests {
 
     #[test]
     fn fix_checksums_clears_diagnostics_and_touches_only_checksum_bytes() {
+        let checksum_diags = |save: &SaveFile| {
+            save.diagnostics()
+                .into_iter()
+                .filter(|d| d.code.starts_with("W-CHECKSUM-"))
+                .count()
+        };
         let input = vec![0u8; 0x8000];
         let mut save = SaveFile::from_bytes(input.clone()).expect("length is valid");
-        assert_eq!(save.diagnostics().len(), 15);
+        assert_eq!(checksum_diags(&save), 15);
         save.fix_checksums();
-        assert!(save.diagnostics().is_empty());
+        assert_eq!(checksum_diags(&save), 0);
         let out = save.to_bytes();
         // Main checksum byte, then the two contiguous 7-byte checksum
         // blocks (all-boxes + 6 per-box) in banks 2 and 3.
@@ -399,9 +373,15 @@ mod tests {
 
     #[test]
     fn new_empty_has_no_diagnostics() {
+        // Against the *full* validate::diagnose catalogue, not just
+        // checksums: counts/sentinels, BCD, terminators, box-init flag,
+        // box staleness, map id — a blank save must be clean everywhere.
         for variant in [GameVariant::RedBlue, GameVariant::Yellow] {
             let save = SaveFile::new_empty(variant);
             assert_eq!(save.diagnostics(), Vec::new(), "{variant:?}");
+            // Same through the game-agnostic trait object boundary.
+            let as_trait: &dyn SaveGame = &save;
+            assert_eq!(as_trait.diagnostics(), Vec::new(), "{variant:?} via trait");
         }
     }
 

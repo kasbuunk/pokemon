@@ -122,8 +122,8 @@ it matters to the game on load.
 +0x000  1    count (0–20)
 +0x001  21   species list + 0xFF
 +0x016  660  20 × 33-byte box mon
-+0x2A2  220  20 × 11-byte OT name
-+0x37E  220  20 × 11-byte nickname
++0x2AA  220  20 × 11-byte OT name (wBoxMonOT $DD2A)
++0x386  220  20 × 11-byte nickname (wBoxMonNicks $DE06)
 ```
 
 The in-game "current box" lives at 0x30C0 and is written back to its bank slot
