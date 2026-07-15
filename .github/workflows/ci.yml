@@ -31,6 +31,25 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
 
+  wasm-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: rustup target add wasm32-unknown-unknown
+      - run: cargo build --release -p pksave-app --target wasm32-unknown-unknown
+
+  mac-build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p pksave-app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pksave-app-macos
+          path: target/release/pksave-app
+
   # Everything that needs a pokered checkout / ROM build: regenerate the
   # static tables and diff, cross-check gen1::offsets against the symbol
   # file, then boot editor-produced saves in PyBoy against the real ROM.
