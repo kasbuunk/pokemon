@@ -8,6 +8,7 @@
 
 mod app;
 mod error;
+mod history;
 mod io;
 mod screens;
 #[cfg(not(target_arch = "wasm32"))]

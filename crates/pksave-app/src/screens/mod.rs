@@ -5,6 +5,7 @@
 pub mod boxes;
 pub mod flags;
 pub mod hex;
+pub mod history;
 pub mod hof;
 pub mod items;
 pub mod map;
@@ -25,4 +26,5 @@ pub struct ScreenState {
     pub map: map::MapState,
     pub hof: hof::HofState,
     pub hex: hex::HexState,
+    pub history: history::HistoryState,
 }

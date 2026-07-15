@@ -10,8 +10,11 @@ use pksave::gen1::save::{changed_ranges, GameVariant, SaveFile};
 use pksave::{Diagnostic, Severity};
 
 use crate::error::AppError;
-use crate::io::{self, IoEvent, SaveRequest};
-use crate::screens;
+use crate::history::{
+    self, BlobPurpose, HistoryEvent, HistorySettings, HistoryStore, Origin, VersionRow,
+};
+use crate::io::{self, IoEvent, SaveHistory, SaveRequest};
+use crate::screens::{self, history::HistoryAction};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::sdcard;
 
@@ -38,6 +41,9 @@ const SHORTCUT_NEW: egui::KeyboardShortcut =
 /// How long a save-confirmation toast stays in the status bar.
 const TOAST_SECONDS: f64 = 8.0;
 
+/// Preset when the user turns on the max-versions limit.
+const DEFAULT_MAX_VERSIONS: usize = 50;
+
 /// The navigable screens, in sidebar order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
@@ -51,10 +57,11 @@ pub enum Screen {
     Map,
     HallOfFame,
     Hex,
+    History,
 }
 
 impl Screen {
-    pub const ALL: [Screen; 10] = [
+    pub const ALL: [Screen; 11] = [
         Screen::Overview,
         Screen::Trainer,
         Screen::Party,
@@ -65,6 +72,7 @@ impl Screen {
         Screen::Map,
         Screen::HallOfFame,
         Screen::Hex,
+        Screen::History,
     ];
 
     pub fn label(self) -> &'static str {
@@ -79,6 +87,7 @@ impl Screen {
             Screen::Map => "Map",
             Screen::HallOfFame => "Hall of Fame",
             Screen::Hex => "Hex",
+            Screen::History => "History",
         }
     }
 }
@@ -255,6 +264,10 @@ enum PendingAction {
         path: std::path::PathBuf,
         shadowing_state: Option<std::path::PathBuf>,
     },
+    /// Load a history version into the editor as the current buffer
+    /// (guarded: it replaces any unsaved edits). Nothing is written to
+    /// disk until the user saves.
+    RestoreVersion(u64),
 }
 
 /// A transient status-bar confirmation (e.g. after a save).
@@ -262,6 +275,63 @@ struct Toast {
     message: String,
     /// `egui` time (seconds) after which the toast disappears.
     expires_at: f64,
+}
+
+/// Version-history state: the events channel, the per-document store,
+/// the cached rows, and the toast-side "name this version" input.
+struct HistoryUi {
+    tx: Sender<HistoryEvent>,
+    rx: Receiver<HistoryEvent>,
+    /// The store for the current document; `None` while there is no
+    /// document (or, natively, no on-disk path yet).
+    store: Option<Box<dyn HistoryStore>>,
+    settings: HistorySettings,
+    /// Cached rows for the History screen (refreshed by `Versions`).
+    versions: Vec<VersionRow>,
+    /// Version awaiting the optional name input in the toast area.
+    naming: Option<u64>,
+    name_text: String,
+    /// Count of legacy `.bak-*` siblings offered for import.
+    legacy_offer: Option<usize>,
+    /// The user declined the import offer for this document.
+    legacy_dismissed: bool,
+    /// Version loaded into the editor by Restore; the next save records
+    /// origin "restore" with this as `parent_id`.
+    restore_parent: Option<u64>,
+    /// Version awaiting delete confirmation.
+    pending_delete: Option<u64>,
+}
+
+impl HistoryUi {
+    fn new() -> HistoryUi {
+        let (tx, rx) = std::sync::mpsc::channel();
+        HistoryUi {
+            tx,
+            rx,
+            store: None,
+            settings: HistorySettings::default(),
+            versions: Vec::new(),
+            naming: None,
+            name_text: String::new(),
+            legacy_offer: None,
+            legacy_dismissed: false,
+            restore_parent: None,
+            pending_delete: None,
+        }
+    }
+
+    /// Forget everything tied to the previous document (the settings
+    /// survive — they are app-wide).
+    fn reset_for_new_doc(&mut self) {
+        self.store = None;
+        self.versions.clear();
+        self.naming = None;
+        self.name_text.clear();
+        self.legacy_offer = None;
+        self.legacy_dismissed = false;
+        self.restore_parent = None;
+        self.pending_delete = None;
+    }
 }
 
 /// SD-card discovery state (native only): the poller channel, the
@@ -306,6 +376,7 @@ pub struct App {
     error: Option<AppError>,
     toast: Option<Toast>,
     close_confirmed: bool,
+    history: HistoryUi,
     #[cfg(not(target_arch = "wasm32"))]
     sd: SdState,
 }
@@ -332,14 +403,63 @@ impl App {
             error: None,
             toast: None,
             close_confirmed: false,
+            history: HistoryUi::new(),
             #[cfg(not(target_arch = "wasm32"))]
             sd: SdState::new(),
         }
     }
 
+    /// (Re)bind the history store to the current document: natively to
+    /// its on-disk path (none until the first save of a new file), on
+    /// wasm to its IndexedDB identity. Sends a fresh version list.
+    fn attach_history_store(&mut self, ctx: &egui::Context) {
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = ctx;
+        self.history.store = match &self.doc {
+            #[cfg(not(target_arch = "wasm32"))]
+            Some(doc) => doc.path.clone().map(|path| {
+                Box::new(history::fs::FsStore::new(path, self.history.tx.clone()))
+                    as Box<dyn HistoryStore>
+            }),
+            #[cfg(target_arch = "wasm32")]
+            Some(doc) => {
+                let identity = format!("{}:{}", history::sha256_hex(&doc.original), doc.file_name);
+                Some(Box::new(history::idb::IdbStore::new(
+                    identity,
+                    self.history.tx.clone(),
+                    ctx.clone(),
+                )) as Box<dyn HistoryStore>)
+            }
+            None => None,
+        };
+        self.history.versions.clear();
+        if let Some(store) = &mut self.history.store {
+            store.list();
+        }
+    }
+
+    /// The history parameters the *next* primary save should record
+    /// with: origin "restore" + the restored version when the buffer
+    /// came from Restore, a plain "save" otherwise. `None` while
+    /// history is off.
+    fn history_params(&self) -> Option<SaveHistory> {
+        if !self.history.settings.enabled {
+            return None;
+        }
+        Some(SaveHistory {
+            origin: match self.history.restore_parent {
+                Some(_) => Origin::Restore,
+                None => Origin::Save,
+            },
+            parent_id: self.history.restore_parent,
+            max_versions: self.history.settings.max_versions,
+        })
+    }
+
     /// Load bytes as the new document. Returns whether it succeeded.
     fn load_bytes(
         &mut self,
+        ctx: &egui::Context,
         bytes: Vec<u8>,
         file_name: String,
         path: Option<std::path::PathBuf>,
@@ -350,6 +470,8 @@ impl App {
                 self.doc = Some(doc);
                 self.ui = screens::ScreenState::default();
                 self.screen = Screen::Overview;
+                self.history.reset_for_new_doc();
+                self.attach_history_store(ctx);
                 true
             }
             Err(e) => {
@@ -366,7 +488,7 @@ impl App {
         });
     }
 
-    fn poll_io(&mut self, now: f64) {
+    fn poll_io(&mut self, ctx: &egui::Context, now: f64) {
         while let Ok(event) = self.io_rx.try_recv() {
             self.dialog_open = false;
             match event {
@@ -375,13 +497,16 @@ impl App {
                     bytes,
                     path,
                 } => {
-                    self.load_bytes(bytes, file_name, path);
+                    self.load_bytes(ctx, bytes, file_name, path);
                 }
                 IoEvent::Saved {
                     primary,
                     path,
                     backup,
                     file_name,
+                    version,
+                    legacy_backups,
+                    history_error,
                 } => {
                     let is_native = path.is_some();
                     #[cfg(not(target_arch = "wasm32"))]
@@ -419,12 +544,167 @@ impl App {
                     {
                         message.push_str(" — safe to eject the SD card");
                     }
+                    if primary {
+                        // Judged on the pre-save rows: rebinding the
+                        // store below clears the cache until the fresh
+                        // list arrives.
+                        let already_imported = self.has_imported_versions();
+                        // Native: save-as may have moved the file —
+                        // rebind the store to the (new) path; this also
+                        // refreshes the version list. On wasm the store
+                        // stays: its identity is pinned to the *load*
+                        // bytes and must not be recomputed from the
+                        // just-rebaselined buffer.
+                        #[cfg(not(target_arch = "wasm32"))]
+                        self.attach_history_store(ctx);
+                        if let Some(entry) = &version {
+                            // Native: the version was recorded inside
+                            // the save flow (blob → manifest → file).
+                            message.push_str(&format!(" · version {}", entry.id));
+                            self.history.naming = Some(entry.id);
+                            self.history.name_text.clear();
+                            self.history.restore_parent = None;
+                        }
+                        if let Some(e) = &history_error {
+                            message.push_str(&format!(" — history not recorded: {e}"));
+                        }
+                        if legacy_backups > 0 && !self.history.legacy_dismissed && !already_imported
+                        {
+                            self.history.legacy_offer = Some(legacy_backups);
+                        }
+                        // wasm: no io-side history — record through the
+                        // IndexedDB store now that the download started.
+                        #[cfg(target_arch = "wasm32")]
+                        if !is_native {
+                            if let (Some(params), Some(doc)) = (self.history_params(), &self.doc) {
+                                let bytes = doc.original.clone();
+                                if let Some(store) = &mut self.history.store {
+                                    store.record(
+                                        bytes,
+                                        params.origin,
+                                        params.parent_id,
+                                        params.max_versions,
+                                    );
+                                    self.history.restore_parent = None;
+                                }
+                            }
+                        }
+                    }
                     self.show_toast(now, message);
                 }
                 IoEvent::Cancelled => {}
                 IoEvent::Error(e) => self.error = Some(e),
             }
         }
+    }
+
+    /// Whether the cached version list already contains imported legacy
+    /// backups (suppresses the "import .bak" offer).
+    fn has_imported_versions(&self) -> bool {
+        self.history
+            .versions
+            .iter()
+            .any(|r| r.entry.origin == Origin::Import)
+    }
+
+    /// Drain history-store events (mirrors [`App::poll_io`]).
+    fn poll_history(&mut self, ctx: &egui::Context, now: f64) {
+        while let Ok(event) = self.history.rx.try_recv() {
+            match event {
+                HistoryEvent::Versions(rows) => {
+                    self.history.versions = rows;
+                    if self.has_imported_versions() {
+                        self.history.legacy_offer = None;
+                    }
+                }
+                HistoryEvent::Recorded(entry) => {
+                    // wasm path: the record completed after the Saved
+                    // toast was shown — extend it.
+                    match &mut self.toast {
+                        Some(toast) => {
+                            toast.message.push_str(&format!(" · version {}", entry.id));
+                            toast.expires_at = now + TOAST_SECONDS;
+                        }
+                        None => self.show_toast(now, format!("Saved · version {}", entry.id)),
+                    }
+                    self.history.naming = Some(entry.id);
+                    self.history.name_text.clear();
+                }
+                HistoryEvent::BlobLoaded { id, purpose, bytes } => match purpose {
+                    BlobPurpose::Restore => self.finish_restore(now, id, bytes),
+                    BlobPurpose::Diff => self.finish_diff(id, bytes),
+                    BlobPurpose::Export => self.start_export(ctx, id, bytes),
+                },
+                HistoryEvent::LegacyImported { count } => {
+                    self.history.legacy_offer = None;
+                    self.history.legacy_dismissed = true;
+                    let plural = if count == 1 { "" } else { "s" };
+                    self.show_toast(
+                        now,
+                        format!("Imported {count} legacy backup{plural} into the version history"),
+                    );
+                }
+                HistoryEvent::Error(message) => {
+                    self.show_toast(now, format!("History: {message}"));
+                }
+            }
+        }
+    }
+
+    /// A Restore blob arrived: replace the editor buffer. The dirty
+    /// flag comes on through the usual diff against the on-disk
+    /// baseline; nothing is written until the user saves.
+    fn finish_restore(&mut self, now: f64, id: u64, bytes: Vec<u8>) {
+        let Some(doc) = &mut self.doc else { return };
+        match SaveFile::from_bytes(bytes) {
+            Ok(save) => {
+                doc.save = save;
+                doc.touch();
+                doc.end_frame();
+                publish_dirty(doc.dirty);
+                self.history.restore_parent = Some(id);
+                self.show_toast(
+                    now,
+                    format!("Version {id} loaded into the editor — save to write it to disk"),
+                );
+            }
+            Err(e) => self.error = Some(AppError::Load(e)),
+        }
+    }
+
+    /// A Diff blob arrived: show its changed ranges (version → current
+    /// buffer) with human-readable field labels on the History screen.
+    fn finish_diff(&mut self, id: u64, bytes: Vec<u8>) {
+        let Some(doc) = &self.doc else { return };
+        let ranges = changed_ranges(&bytes, doc.serialized());
+        self.ui.history.diff = Some(screens::history::DiffView {
+            id,
+            byte_count: ranges.iter().map(|r| r.len()).sum(),
+            lines: history::spans::describe(&ranges),
+        });
+        self.screen = Screen::History;
+    }
+
+    /// An Export blob arrived: hand it to the regular save-as flow
+    /// (native dialog / wasm download) as a non-primary save.
+    fn start_export(&mut self, ctx: &egui::Context, id: u64, bytes: Vec<u8>) {
+        if self.dialog_open {
+            return;
+        }
+        let file_name = self
+            .doc
+            .as_ref()
+            .map(|d| d.file_name.as_str())
+            .unwrap_or("save.srm");
+        let request = SaveRequest {
+            default_file_name: history::export_file_name(file_name, id),
+            bytes,
+            primary: false,
+            original_path: None,
+            history: None,
+        };
+        self.dialog_open = true;
+        io::spawn_save(self.io_tx.clone(), ctx.clone(), request);
     }
 
     /// Start the SD-card poller thread once (the first frame is the
@@ -551,6 +831,8 @@ impl App {
                 self.doc = Some(Doc::new_empty(variant));
                 self.ui = screens::ScreenState::default();
                 self.screen = Screen::Overview;
+                self.history.reset_for_new_doc();
+                self.attach_history_store(ctx);
             }
             PendingAction::Revert => {
                 if let Some(doc) = &mut self.doc {
@@ -567,7 +849,7 @@ impl App {
                 file_name,
                 path,
             } => {
-                self.load_bytes(bytes, file_name, path);
+                self.load_bytes(ctx, bytes, file_name, path);
             }
             #[cfg(not(target_arch = "wasm32"))]
             PendingAction::OpenDiscovered {
@@ -579,12 +861,17 @@ impl App {
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_else(|| "card.srm".to_owned());
-                    if self.load_bytes(bytes, file_name, Some(path)) {
+                    if self.load_bytes(ctx, bytes, file_name, Some(path)) {
                         self.sd.shadow_warning = shadowing_state;
                     }
                 }
                 Err(source) => self.error = Some(AppError::Read { path, source }),
             },
+            PendingAction::RestoreVersion(id) => {
+                if let Some(store) = &mut self.history.store {
+                    store.load_blob(id, BlobPurpose::Restore);
+                }
+            }
         }
     }
 
@@ -602,6 +889,7 @@ impl App {
             },
             primary,
             original_path: if primary { doc.path.clone() } else { None },
+            history: if primary { self.history_params() } else { None },
         };
         self.dialog_open = true;
         io::spawn_save(self.io_tx.clone(), ctx.clone(), request);
@@ -685,6 +973,8 @@ impl App {
                     if ui.add_enabled(dirty, egui::Button::new("Revert")).clicked() {
                         self.request(ctx, PendingAction::Revert);
                     }
+                    ui.separator();
+                    ui.menu_button("History", |ui| self.history_settings_menu(ui));
                     #[cfg(not(target_arch = "wasm32"))]
                     {
                         ui.separator();
@@ -713,10 +1003,55 @@ impl App {
         });
     }
 
+    /// The File → History settings submenu: history on/off and the
+    /// max-versions limit. (A history-location override is deliberately
+    /// deferred — the history always lives beside the file for v1.)
+    fn history_settings_menu(&mut self, ui: &mut egui::Ui) {
+        ui.checkbox(&mut self.history.settings.enabled, "Record version history")
+            .on_hover_text(
+                "Every Save records a restorable snapshot beside the file \
+             (in the browser: IndexedDB). Off: only the plain .bak backup is written.",
+            );
+        let mut limited = self.history.settings.max_versions.is_some();
+        let mut changed_max: Option<usize> = None;
+        if ui
+            .checkbox(&mut limited, "Limit stored versions")
+            .on_hover_text(
+                "Past the limit, the oldest unnamed versions are pruned. \
+                 Named versions are never auto-pruned; if only named versions \
+                 remain, nothing more is pruned.",
+            )
+            .changed()
+        {
+            self.history.settings.max_versions = limited.then_some(DEFAULT_MAX_VERSIONS);
+            if limited {
+                changed_max = Some(DEFAULT_MAX_VERSIONS);
+            }
+        }
+        if let Some(max) = &mut self.history.settings.max_versions {
+            let response = ui.add(
+                egui::DragValue::new(max)
+                    .range(1..=100_000)
+                    .prefix("keep ")
+                    .suffix(" versions"),
+            );
+            if response.changed() {
+                changed_max = Some(*max);
+            }
+        }
+        // Apply a (new) limit to the existing history right away.
+        if let (Some(max), Some(store)) = (changed_max, &mut self.history.store) {
+            store.prune(max);
+        }
+    }
+
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         let now = ui.ctx().input(|i| i.time);
         if self.toast.as_ref().is_some_and(|t| t.expires_at <= now) {
             self.toast = None;
+            // The optional naming field lives in the toast area and
+            // goes with it (versions can still be renamed in History).
+            self.history.naming = None;
         }
         egui::Panel::bottom("status_bar").show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -752,16 +1087,78 @@ impl App {
                     ui.separator();
                     let message = toast.message.clone();
                     ui.colored_label(ui.visuals().hyperlink_color, message);
+                    self.naming_field(ui, now);
                     if ui.small_button("✕").on_hover_text("Dismiss").clicked() {
                         self.toast = None;
+                        self.history.naming = None;
                     } else {
                         // Wake up in time to expire the toast.
                         ui.ctx()
                             .request_repaint_after(std::time::Duration::from_secs(1));
                     }
                 }
+                self.legacy_offer_button(ui);
             });
         });
+    }
+
+    /// The unobtrusive, optional "name this version" input next to the
+    /// save toast. Never required, never blocks: OK/Enter with text
+    /// names the just-saved version, anything else just goes away.
+    fn naming_field(&mut self, ui: &mut egui::Ui, now: f64) {
+        let Some(id) = self.history.naming else {
+            return;
+        };
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut self.history.name_text)
+                .desired_width(150.0)
+                .hint_text("name this version (optional)"),
+        );
+        if response.has_focus() {
+            // Don't expire the toast mid-typing.
+            if let Some(toast) = &mut self.toast {
+                toast.expires_at = now + TOAST_SECONDS;
+            }
+        }
+        let submit = ui.small_button("OK").clicked()
+            || (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+        if submit {
+            let name = self.history.name_text.trim().to_owned();
+            if !name.is_empty() {
+                if let Some(store) = &mut self.history.store {
+                    store.set_label(id, Some(name));
+                }
+            }
+            self.history.naming = None;
+            self.history.name_text.clear();
+        }
+    }
+
+    /// Non-blocking offer to import legacy `.bak-*` siblings into the
+    /// history (shown after a save discovered them).
+    fn legacy_offer_button(&mut self, ui: &mut egui::Ui) {
+        let Some(count) = self.history.legacy_offer else {
+            return;
+        };
+        ui.separator();
+        let plural = if count == 1 { "" } else { "s" };
+        if ui
+            .button(format!("Import {count} old .bak backup{plural}"))
+            .on_hover_text(
+                "Add the legacy .bak-<timestamp> files beside this save to the \
+                 version history (timestamps are taken from the file names).",
+            )
+            .clicked()
+        {
+            self.history.legacy_offer = None;
+            if let Some(store) = &mut self.history.store {
+                store.import_legacy();
+            }
+        }
+        if ui.small_button("✕").on_hover_text("Not now").clicked() {
+            self.history.legacy_offer = None;
+            self.history.legacy_dismissed = true;
+        }
     }
 
     fn side_panel(&mut self, ui: &mut egui::Ui) {
@@ -790,6 +1187,7 @@ impl App {
 
     fn central(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        let mut history_actions: Vec<HistoryAction> = Vec::new();
         egui::CentralPanel::default().show(ui, |ui| {
             let Some(doc) = &mut self.doc else {
                 self.empty_state(ui, &ctx);
@@ -807,12 +1205,46 @@ impl App {
                 Screen::Map => screens::map::ui(ui, doc, &mut self.ui.map),
                 Screen::HallOfFame => screens::hof::ui(ui, doc, &mut self.ui.hof),
                 Screen::Hex => screens::hex::ui(ui, doc, &mut self.ui.hex),
+                Screen::History => screens::history::ui(
+                    ui,
+                    &mut self.ui.history,
+                    &self.history.versions,
+                    self.history.settings.enabled,
+                    &mut history_actions,
+                ),
             }
             if let Some((screen, offset)) = goto {
                 self.screen = screen;
                 self.ui.hex.scroll_to(offset);
             }
         });
+        for action in history_actions {
+            self.handle_history_action(&ctx, action);
+        }
+    }
+
+    /// Execute a History-screen row action.
+    fn handle_history_action(&mut self, ctx: &egui::Context, action: HistoryAction) {
+        match action {
+            // Guarded like Open: restoring replaces any unsaved edits.
+            HistoryAction::Restore(id) => self.request(ctx, PendingAction::RestoreVersion(id)),
+            HistoryAction::Diff(id) => {
+                if let Some(store) = &mut self.history.store {
+                    store.load_blob(id, BlobPurpose::Diff);
+                }
+            }
+            HistoryAction::SetLabel(id, label) => {
+                if let Some(store) = &mut self.history.store {
+                    store.set_label(id, label);
+                }
+            }
+            HistoryAction::Export(id) => {
+                if let Some(store) = &mut self.history.store {
+                    store.load_blob(id, BlobPurpose::Export);
+                }
+            }
+            HistoryAction::Delete(id) => self.history.pending_delete = Some(id),
+        }
     }
 
     /// The no-document landing screen: prominent Open / New actions plus
@@ -991,6 +1423,31 @@ impl App {
             }
         }
 
+        if let Some(id) = self.history.pending_delete {
+            let mut decided: Option<bool> = None;
+            egui::Modal::new(egui::Id::new("confirm_delete_version")).show(ctx, |ui| {
+                ui.heading(format!("Delete version {id}?"));
+                ui.label("The snapshot is removed from the history. This cannot be undone.");
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Delete").clicked() {
+                        decided = Some(true);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        decided = Some(false);
+                    }
+                });
+            });
+            if let Some(delete) = decided {
+                self.history.pending_delete = None;
+                if delete {
+                    if let Some(store) = &mut self.history.store {
+                        store.delete(id);
+                    }
+                }
+            }
+        }
+
         if let Some(message) = self.error.as_ref().map(|e| e.to_string()) {
             let mut close = false;
             egui::Modal::new(egui::Id::new("error_modal")).show(ctx, |ui| {
@@ -1021,7 +1478,8 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let now = ctx.input(|i| i.time);
-        self.poll_io(now);
+        self.poll_io(&ctx, now);
+        self.poll_history(&ctx, now);
         #[cfg(not(target_arch = "wasm32"))]
         self.poll_sd(&ctx, now);
         self.handle_dropped_files(&ctx);
@@ -1144,8 +1602,27 @@ mod tests {
         SaveFile::new_empty(GameVariant::RedBlue).to_bytes()
     }
 
+    /// An `IoEvent::Saved` without any history payload.
+    fn saved_event(
+        primary: bool,
+        path: Option<std::path::PathBuf>,
+        backup: Option<std::path::PathBuf>,
+        file_name: &str,
+    ) -> IoEvent {
+        IoEvent::Saved {
+            primary,
+            path,
+            backup,
+            file_name: file_name.to_owned(),
+            version: None,
+            legacy_backups: 0,
+            history_error: None,
+        }
+    }
+
     #[test]
     fn opened_event_loads_a_doc_and_clears_dialog_flag() {
+        let ctx = egui::Context::default();
         let mut app = App::new();
         app.dialog_open = true;
         app.io_tx
@@ -1155,7 +1632,7 @@ mod tests {
                 path: Some(std::path::PathBuf::from("/tmp/poke.sav")),
             })
             .expect("send");
-        app.poll_io(0.0);
+        app.poll_io(&ctx, 0.0);
         assert!(!app.dialog_open);
         let doc = app.doc.as_ref().expect("doc loaded");
         assert_eq!(doc.file_name, "poke.sav");
@@ -1169,6 +1646,7 @@ mod tests {
 
     #[test]
     fn opened_event_with_short_bytes_sets_load_error() {
+        let ctx = egui::Context::default();
         let mut app = App::new();
         app.io_tx
             .send(IoEvent::Opened {
@@ -1177,7 +1655,7 @@ mod tests {
                 path: None,
             })
             .expect("send");
-        app.poll_io(0.0);
+        app.poll_io(&ctx, 0.0);
         assert!(app.doc.is_none());
         assert!(matches!(app.error, Some(AppError::Load(_))));
     }
@@ -1193,14 +1671,15 @@ mod tests {
         app.doc = Some(doc);
         app.dialog_open = true;
         app.io_tx
-            .send(IoEvent::Saved {
-                primary: true,
-                path: Some(std::path::PathBuf::from("/tmp/renamed.sav")),
-                backup: Some(std::path::PathBuf::from("/tmp/renamed.sav.bak-x")),
-                file_name: "renamed.sav".into(),
-            })
+            .send(saved_event(
+                true,
+                Some(std::path::PathBuf::from("/tmp/renamed.sav")),
+                Some(std::path::PathBuf::from("/tmp/renamed.sav.bak-x")),
+                "renamed.sav",
+            ))
             .expect("send");
-        app.poll_io(1.0);
+        let ctx = egui::Context::default();
+        app.poll_io(&ctx, 1.0);
         assert!(!app.dialog_open);
         let doc = app.doc.as_ref().expect("doc");
         assert!(!doc.dirty, "saved: edits became the new baseline");
@@ -1224,14 +1703,15 @@ mod tests {
         doc.end_frame();
         app.doc = Some(doc);
         app.io_tx
-            .send(IoEvent::Saved {
-                primary: false,
-                path: Some(std::path::PathBuf::from("/tmp/copy.sav")),
-                backup: None,
-                file_name: "copy.sav".into(),
-            })
+            .send(saved_event(
+                false,
+                Some(std::path::PathBuf::from("/tmp/copy.sav")),
+                None,
+                "copy.sav",
+            ))
             .expect("send");
-        app.poll_io(0.0);
+        let ctx = egui::Context::default();
+        app.poll_io(&ctx, 0.0);
         let doc = app.doc.as_ref().expect("doc");
         assert!(doc.dirty, "copy of original does not rebaseline");
         assert_eq!(doc.file_name, "new.sav");
@@ -1241,34 +1721,31 @@ mod tests {
 
     #[test]
     fn wasm_style_saved_event_toasts_download() {
+        let ctx = egui::Context::default();
         let mut app = App::new();
         app.doc = Some(empty_doc());
         app.io_tx
-            .send(IoEvent::Saved {
-                primary: true,
-                path: None,
-                backup: None,
-                file_name: "new.sav".into(),
-            })
+            .send(saved_event(true, None, None, "new.sav"))
             .expect("send");
-        app.poll_io(0.0);
+        app.poll_io(&ctx, 0.0);
         let toast = app.toast.as_ref().expect("toast");
         assert_eq!(toast.message, "Download started: new.sav");
     }
 
     #[test]
     fn error_and_cancelled_events() {
+        let ctx = egui::Context::default();
         let mut app = App::new();
         app.dialog_open = true;
         app.io_tx.send(IoEvent::Cancelled).expect("send");
-        app.poll_io(0.0);
+        app.poll_io(&ctx, 0.0);
         assert!(!app.dialog_open);
         assert!(app.error.is_none());
 
         app.io_tx
             .send(IoEvent::Error(AppError::WasmSave("boom".into())))
             .expect("send");
-        app.poll_io(0.0);
+        app.poll_io(&ctx, 0.0);
         assert!(matches!(app.error, Some(AppError::WasmSave(_))));
     }
 
@@ -1292,16 +1769,17 @@ mod tests {
             .cards
             .push(fake_card(std::path::Path::new("/Volumes/ONION")));
         app.io_tx
-            .send(IoEvent::Saved {
-                primary: true,
-                path: Some(std::path::PathBuf::from(
+            .send(saved_event(
+                true,
+                Some(std::path::PathBuf::from(
                     "/Volumes/ONION/Saves/CurrentProfile/saves/Gambatte/RED.srm",
                 )),
-                backup: None,
-                file_name: "RED.srm".into(),
-            })
+                None,
+                "RED.srm",
+            ))
             .expect("send");
-        app.poll_io(0.0);
+        let ctx = egui::Context::default();
+        app.poll_io(&ctx, 0.0);
         let toast = app.toast.as_ref().expect("toast");
         assert!(
             toast.message.contains("safe to eject the SD card"),
@@ -1319,14 +1797,15 @@ mod tests {
             .cards
             .push(fake_card(std::path::Path::new("/Volumes/ONION")));
         app.io_tx
-            .send(IoEvent::Saved {
-                primary: true,
-                path: Some(std::path::PathBuf::from("/home/user/RED.srm")),
-                backup: None,
-                file_name: "RED.srm".into(),
-            })
+            .send(saved_event(
+                true,
+                Some(std::path::PathBuf::from("/home/user/RED.srm")),
+                None,
+                "RED.srm",
+            ))
             .expect("send");
-        app.poll_io(0.0);
+        let ctx = egui::Context::default();
+        app.poll_io(&ctx, 0.0);
         let toast = app.toast.as_ref().expect("toast");
         assert!(!toast.message.contains("safe to eject"));
     }
@@ -1516,5 +1995,353 @@ mod tests {
         let doc = app.doc.as_ref().expect("doc");
         assert_eq!(doc.variant, GameVariant::Yellow);
         assert!(!doc.dirty);
+    }
+
+    // ---- version history (issue #9) ----
+
+    fn version_entry(id: u64) -> history::VersionEntry {
+        history::VersionEntry {
+            id,
+            timestamp: 42,
+            label: None,
+            sha256: "00".repeat(32),
+            size: 0x8000,
+            parent_id: None,
+            origin: Origin::Save,
+        }
+    }
+
+    fn version_row(id: u64, origin: Origin) -> VersionRow {
+        VersionRow {
+            entry: history::VersionEntry {
+                origin,
+                ..version_entry(id)
+            },
+            blob_ok: true,
+            summary: None,
+        }
+    }
+
+    #[test]
+    fn saved_event_with_version_extends_toast_and_arms_naming() {
+        let ctx = egui::Context::default();
+        let mut app = App::new();
+        app.doc = Some(empty_doc());
+        app.history.restore_parent = Some(7); // cleared by the save
+        app.io_tx
+            .send(IoEvent::Saved {
+                primary: true,
+                path: Some(std::path::PathBuf::from("/tmp/poke.srm")),
+                backup: None,
+                file_name: "poke.srm".into(),
+                version: Some(version_entry(14)),
+                legacy_backups: 0,
+                history_error: None,
+            })
+            .expect("send");
+        app.poll_io(&ctx, 0.0);
+        let toast = app.toast.as_ref().expect("toast");
+        assert!(
+            toast.message.contains("· version 14"),
+            "toast: {}",
+            toast.message
+        );
+        assert_eq!(app.history.naming, Some(14), "naming field armed");
+        assert_eq!(
+            app.history.restore_parent, None,
+            "restore lineage consumed by the save"
+        );
+    }
+
+    #[test]
+    fn saved_event_history_failure_is_reported_but_save_succeeds() {
+        let ctx = egui::Context::default();
+        let mut app = App::new();
+        app.doc = Some(empty_doc());
+        app.io_tx
+            .send(IoEvent::Saved {
+                primary: true,
+                path: Some(std::path::PathBuf::from("/tmp/poke.srm")),
+                backup: None,
+                file_name: "poke.srm".into(),
+                version: None,
+                legacy_backups: 0,
+                history_error: Some("disk full".into()),
+            })
+            .expect("send");
+        app.poll_io(&ctx, 0.0);
+        let toast = app.toast.as_ref().expect("toast");
+        assert!(toast.message.contains("Saved to poke.srm"));
+        assert!(
+            toast.message.contains("history not recorded: disk full"),
+            "toast: {}",
+            toast.message
+        );
+        assert_eq!(app.history.naming, None);
+    }
+
+    #[test]
+    fn saved_event_offers_legacy_import_until_imported_or_dismissed() {
+        let ctx = egui::Context::default();
+        let mut app = App::new();
+        app.doc = Some(empty_doc());
+        let saved_with_baks = || IoEvent::Saved {
+            primary: true,
+            path: Some(std::path::PathBuf::from("/tmp/poke.srm")),
+            backup: None,
+            file_name: "poke.srm".into(),
+            version: Some(version_entry(1)),
+            legacy_backups: 3,
+            history_error: None,
+        };
+        app.io_tx.send(saved_with_baks()).expect("send");
+        app.poll_io(&ctx, 0.0);
+        assert_eq!(app.history.legacy_offer, Some(3));
+
+        // Already-imported history suppresses the offer.
+        app.history.legacy_offer = None;
+        app.history.versions = vec![version_row(1, Origin::Import)];
+        app.io_tx.send(saved_with_baks()).expect("send");
+        app.poll_io(&ctx, 0.0);
+        assert_eq!(app.history.legacy_offer, None);
+
+        // A dismissal sticks for the rest of the document's session.
+        app.history.versions.clear();
+        app.history.legacy_dismissed = true;
+        app.io_tx.send(saved_with_baks()).expect("send");
+        app.poll_io(&ctx, 0.0);
+        assert_eq!(app.history.legacy_offer, None);
+    }
+
+    #[test]
+    fn versions_event_updates_rows_and_import_clears_the_offer() {
+        let ctx = egui::Context::default();
+        let mut app = App::new();
+        app.history.legacy_offer = Some(2);
+        app.history
+            .tx
+            .send(HistoryEvent::Versions(vec![version_row(1, Origin::Save)]))
+            .expect("send");
+        app.poll_history(&ctx, 0.0);
+        assert_eq!(app.history.versions.len(), 1);
+        assert_eq!(app.history.legacy_offer, Some(2), "no import yet");
+
+        app.history
+            .tx
+            .send(HistoryEvent::Versions(vec![
+                version_row(1, Origin::Save),
+                version_row(2, Origin::Import),
+            ]))
+            .expect("send");
+        app.poll_history(&ctx, 0.0);
+        assert_eq!(app.history.versions.len(), 2);
+        assert_eq!(
+            app.history.legacy_offer, None,
+            "imported versions retire the offer"
+        );
+    }
+
+    #[test]
+    fn restore_blob_sets_dirty_without_touching_disk() {
+        let ctx = egui::Context::default();
+        let mut app = App::new();
+        app.doc = Some(empty_doc());
+        assert_eq!(
+            app.doc.as_ref().expect("doc").path,
+            None,
+            "nowhere to write"
+        );
+
+        // A restored snapshot that differs from the current buffer.
+        let mut restored = SaveFile::new_empty(GameVariant::RedBlue);
+        restored.set_badges(0xFF);
+        let blob = restored.to_bytes();
+
+        app.history
+            .tx
+            .send(HistoryEvent::BlobLoaded {
+                id: 5,
+                purpose: BlobPurpose::Restore,
+                bytes: blob.clone(),
+            })
+            .expect("send");
+        app.poll_history(&ctx, 0.0);
+
+        let doc = app.doc.as_ref().expect("doc");
+        assert!(doc.dirty, "restore turns the dirty flag on");
+        assert_eq!(doc.save.to_bytes(), blob, "buffer is the restored version");
+        assert_eq!(app.history.restore_parent, Some(5));
+        let toast = app.toast.as_ref().expect("toast");
+        assert!(toast.message.contains("Version 5 loaded"));
+    }
+
+    #[test]
+    fn history_params_track_restore_lineage_and_settings() {
+        let mut app = App::new();
+        let params = app.history_params().expect("history on by default");
+        assert_eq!(params.origin, Origin::Save);
+        assert_eq!(params.parent_id, None);
+        assert_eq!(params.max_versions, None);
+
+        app.history.restore_parent = Some(3);
+        app.history.settings.max_versions = Some(10);
+        let params = app.history_params().expect("params");
+        assert_eq!(params.origin, Origin::Restore);
+        assert_eq!(params.parent_id, Some(3));
+        assert_eq!(params.max_versions, Some(10));
+
+        app.history.settings.enabled = false;
+        assert!(
+            app.history_params().is_none(),
+            "history off: nothing recorded"
+        );
+    }
+
+    #[test]
+    fn recorded_event_extends_an_existing_toast() {
+        // The wasm flow: the Saved toast appears first, the async
+        // record completes after.
+        let ctx = egui::Context::default();
+        let mut app = App::new();
+        app.show_toast(0.0, "Download started: new.sav".to_owned());
+        app.history
+            .tx
+            .send(HistoryEvent::Recorded(version_entry(2)))
+            .expect("send");
+        app.poll_history(&ctx, 1.0);
+        let toast = app.toast.as_ref().expect("toast");
+        assert_eq!(toast.message, "Download started: new.sav · version 2");
+        assert_eq!(app.history.naming, Some(2));
+    }
+
+    #[test]
+    fn diff_blob_builds_the_labeled_diff_view() {
+        let ctx = egui::Context::default();
+        let mut app = App::new();
+        let mut doc = empty_doc();
+        // Give the current buffer more money than the snapshot.
+        doc.save.set_money(123_456).expect("money in range");
+        doc.touch();
+        doc.end_frame();
+        let snapshot = SaveFile::new_empty(GameVariant::RedBlue).to_bytes();
+        app.doc = Some(doc);
+
+        app.history
+            .tx
+            .send(HistoryEvent::BlobLoaded {
+                id: 1,
+                purpose: BlobPurpose::Diff,
+                bytes: snapshot,
+            })
+            .expect("send");
+        app.poll_history(&ctx, 0.0);
+
+        let diff = app.ui.history.diff.as_ref().expect("diff view");
+        assert_eq!(diff.id, 1);
+        assert!(diff.byte_count > 0);
+        assert!(
+            diff.lines.iter().any(|l| l.contains("Money")),
+            "money edit labeled: {:?}",
+            diff.lines
+        );
+        assert!(
+            diff.lines.iter().any(|l| l.contains("Main checksum")),
+            "checksum change labeled: {:?}",
+            diff.lines
+        );
+        assert_eq!(app.screen, Screen::History, "diff navigates to History");
+    }
+
+    #[test]
+    fn restore_is_guarded_by_the_dirty_check() {
+        let ctx = egui::Context::default();
+        let mut app = App::new();
+        app.doc = Some(empty_doc());
+        make_dirty(&mut app);
+        app.handle_history_action(&ctx, HistoryAction::Restore(1));
+        assert!(
+            matches!(app.pending, Some(PendingAction::RestoreVersion(1))),
+            "dirty: restore waits for the discard confirmation"
+        );
+    }
+
+    #[test]
+    fn delete_action_asks_for_confirmation_first() {
+        let ctx = egui::Context::default();
+        let mut app = App::new();
+        app.doc = Some(empty_doc());
+        app.handle_history_action(&ctx, HistoryAction::Delete(4));
+        assert_eq!(app.history.pending_delete, Some(4));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn end_to_end_native_history_flow_through_the_stores() {
+        // Open a real file, attach the store, record via the io flow,
+        // then rename and restore through events — the full loop.
+        let ctx = egui::Context::default();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("poke.srm");
+        std::fs::write(&path, valid_save_bytes()).expect("seed");
+
+        let mut app = App::new();
+        app.io_tx
+            .send(IoEvent::Opened {
+                file_name: "poke.srm".into(),
+                bytes: valid_save_bytes(),
+                path: Some(path.clone()),
+            })
+            .expect("send");
+        app.poll_io(&ctx, 0.0);
+        app.poll_history(&ctx, 0.0);
+        assert!(app.history.store.is_some(), "store attached to the path");
+        assert!(app.history.versions.is_empty(), "no versions yet");
+
+        // Save through the (post-dialog) io flow, as spawn_save would.
+        let mut doc = app.doc.take().expect("doc");
+        doc.save.set_badges(0x01);
+        doc.touch();
+        doc.end_frame();
+        let bytes = doc.save.to_bytes();
+        app.doc = Some(doc);
+        let event = io::write_picked(
+            &path,
+            &bytes,
+            Some(&path),
+            true,
+            app.history_params().as_ref(),
+        );
+        app.io_tx.send(event).expect("send");
+        app.poll_io(&ctx, 1.0);
+        app.poll_history(&ctx, 1.0);
+        assert_eq!(app.history.versions.len(), 1);
+        assert_eq!(app.history.naming, Some(1));
+
+        // Name it through the store, as the toast field would.
+        if let Some(store) = &mut app.history.store {
+            store.set_label(1, Some("first badge".into()));
+        }
+        app.poll_history(&ctx, 2.0);
+        assert_eq!(
+            app.history.versions[0].entry.label.as_deref(),
+            Some("first badge")
+        );
+
+        // Restore it (clean doc: performs immediately) and check the
+        // buffer matches the snapshot while the file is untouched.
+        let before_on_disk = std::fs::read(&path).expect("on disk");
+        app.request(&ctx, PendingAction::RestoreVersion(1));
+        app.poll_history(&ctx, 3.0);
+        assert_eq!(app.history.restore_parent, Some(1));
+        assert_eq!(
+            app.doc.as_ref().expect("doc").save.to_bytes(),
+            bytes,
+            "buffer holds the restored snapshot"
+        );
+        assert_eq!(
+            std::fs::read(&path).expect("on disk"),
+            before_on_disk,
+            "nothing written to disk by the restore"
+        );
     }
 }
