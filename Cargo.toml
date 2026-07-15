@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["crates/pksave", "crates/xtask"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/kasbuunk/pokemon"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"

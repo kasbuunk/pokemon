@@ -1,0 +1,9 @@
+/target
+/crates/pksave-app/dist
+*.gbc
+*.sym
+*.map
+e2e/fixtures/
+e2e/.venv/
+__pycache__/
+.DS_Store
