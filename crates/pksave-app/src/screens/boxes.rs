@@ -6,7 +6,7 @@ use pksave::gen1::offsets;
 use pksave::gen1::pokemon::{MonMut, MonView, PartyMon};
 
 use crate::app::Doc;
-use crate::screens::party::{apply_edits, common_editor, snapshot, MonSnapshot};
+use crate::screens::party::{apply_mon_edits, common_editor, MonSnapshot};
 use crate::widgets;
 
 #[derive(Default)]
@@ -195,11 +195,7 @@ pub fn ui(ui: &mut egui::Ui, doc: &mut Doc, state: &mut BoxesState) {
 
 fn detail_editor(ui: &mut egui::Ui, doc: &mut Doc, n: usize, i: usize) -> bool {
     let mut touched = false;
-    let snap: MonSnapshot = {
-        let view = doc.save.box_(n);
-        let mon = view.mon(i);
-        snapshot!(mon)
-    };
+    let snap = MonSnapshot::read(&doc.save.box_(n).mon(i));
     let (nickname, ot_name) = {
         let view = doc.save.box_(n);
         (view.nickname(i), view.ot_name(i))
@@ -260,7 +256,7 @@ fn detail_editor(ui: &mut egui::Ui, doc: &mut Doc, n: usize, i: usize) -> bool {
     if !edits.is_empty() {
         let mut b = doc.save.box_mut(n);
         let mut mon = b.mon_mut(i);
-        apply_edits!(mon, edits);
+        apply_mon_edits(&mut mon, &edits);
         touched = true;
     }
 

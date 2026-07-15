@@ -9,6 +9,7 @@ use pksave::gen1::detect::detect_variant;
 use pksave::gen1::save::{changed_ranges, GameVariant, SaveFile};
 use pksave::{Diagnostic, Severity};
 
+use crate::error::AppError;
 use crate::io::{self, IoEvent, SaveRequest};
 use crate::screens;
 
@@ -24,6 +25,16 @@ pub fn publish_dirty(dirty: bool) {
 pub fn is_dirty_published() -> bool {
     DIRTY_PUBLISHED.load(Ordering::Relaxed)
 }
+
+const SHORTCUT_OPEN: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::O);
+const SHORTCUT_SAVE: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::S);
+const SHORTCUT_NEW: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::N);
+
+/// How long a save-confirmation toast stays in the status bar.
+const TOAST_SECONDS: f64 = 8.0;
 
 /// The navigable screens, in sidebar order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,7 +86,7 @@ pub fn screen_for_diagnostic(diag: &Diagnostic) -> Screen {
     use pksave::gen1::offsets;
     let span_start = diag.span.as_ref().map(|s| s.start);
     match diag.code {
-        c if c.starts_with("W-CHECKSUM") => Screen::Hex,
+        c if c.starts_with("W-CHECKSUM") || c == "I-CHECKSUM-PINNED" => Screen::Hex,
         c if c.starts_with("W-ITEMS") => Screen::Items,
         "W-PARTY-COUNT" | "W-PARTY-SENTINEL" | "W-LEVEL-RANGE" => Screen::Party,
         "W-SPECIES-INVALID" => {
@@ -109,9 +120,13 @@ pub struct Doc {
     pub path: Option<std::path::PathBuf>,
     pub variant: GameVariant,
     pub diagnostics: Vec<Diagnostic>,
-    /// `changed_ranges(original, save.to_bytes())`, cached.
+    /// `changed_ranges(original, serialized)`, cached.
     pub changed: Vec<Range<usize>>,
     pub dirty: bool,
+    /// `save.to_bytes()`, cached — recomputed by [`Doc::end_frame`] after
+    /// a [`Doc::touch`], so per-frame consumers (the hex view) don't
+    /// serialize the whole buffer every frame.
+    serialized: Vec<u8>,
     touched: bool,
 }
 
@@ -125,7 +140,7 @@ impl Doc {
         let variant = detect_variant(&save);
         let diagnostics = save.diagnostics();
         Ok(Doc {
-            original: bytes,
+            original: bytes.clone(),
             save,
             file_name,
             path,
@@ -133,14 +148,16 @@ impl Doc {
             diagnostics,
             changed: Vec::new(),
             dirty: false,
+            serialized: bytes,
             touched: false,
         })
     }
 
     pub fn new_empty(variant: GameVariant) -> Doc {
         let save = SaveFile::new_empty(variant);
+        let bytes = save.to_bytes();
         Doc {
-            original: save.to_bytes(),
+            original: bytes.clone(),
             diagnostics: save.diagnostics(),
             save,
             file_name: "new.sav".to_owned(),
@@ -148,6 +165,7 @@ impl Doc {
             variant,
             changed: Vec::new(),
             dirty: false,
+            serialized: bytes,
             touched: false,
         }
     }
@@ -170,9 +188,15 @@ impl Doc {
         true
     }
 
+    /// The bytes exactly as they would be saved (checksums included),
+    /// cached — see [`Doc::end_frame`].
+    pub fn serialized(&self) -> &[u8] {
+        &self.serialized
+    }
+
     fn refresh(&mut self) {
-        let current = self.save.to_bytes();
-        self.changed = changed_ranges(&self.original, &current);
+        self.serialized = self.save.to_bytes();
+        self.changed = changed_ranges(&self.original, &self.serialized);
         self.dirty = !self.changed.is_empty();
         self.diagnostics = self.save.diagnostics();
     }
@@ -207,13 +231,27 @@ impl Doc {
 }
 
 /// A destructive action awaiting confirmation while the document is dirty.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum PendingAction {
     Open,
     New(GameVariant),
     Revert,
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     Close,
+    /// A file dropped onto the window, stashed until the unsaved-changes
+    /// guard resolves.
+    LoadDropped {
+        bytes: Vec<u8>,
+        file_name: String,
+        path: Option<std::path::PathBuf>,
+    },
+}
+
+/// A transient status-bar confirmation (e.g. after a save).
+struct Toast {
+    message: String,
+    /// `egui` time (seconds) after which the toast disappears.
+    expires_at: f64,
 }
 
 pub struct App {
@@ -225,12 +263,21 @@ pub struct App {
     /// One dialog at a time; the flag stops double-spawning.
     dialog_open: bool,
     pending: Option<PendingAction>,
-    error: Option<String>,
+    error: Option<AppError>,
+    toast: Option<Toast>,
     close_confirmed: bool,
 }
 
+impl Default for App {
+    fn default() -> Self {
+        App::new()
+    }
+}
+
 impl App {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> App {
+    /// Plain constructor (no `eframe::CreationContext` needed), so tests
+    /// can build an `App` without a windowing backend.
+    pub fn new() -> App {
         let (io_tx, io_rx) = std::sync::mpsc::channel();
         App {
             doc: None,
@@ -241,6 +288,7 @@ impl App {
             dialog_open: false,
             pending: None,
             error: None,
+            toast: None,
             close_confirmed: false,
         }
     }
@@ -253,11 +301,11 @@ impl App {
                 self.ui = screens::ScreenState::default();
                 self.screen = Screen::Overview;
             }
-            Err(e) => self.error = Some(e.to_string()),
+            Err(e) => self.error = Some(AppError::Load(e)),
         }
     }
 
-    fn poll_io(&mut self) {
+    fn poll_io(&mut self, now: f64) {
         while let Ok(event) = self.io_rx.try_recv() {
             self.dialog_open = false;
             match event {
@@ -266,7 +314,13 @@ impl App {
                     bytes,
                     path,
                 } => self.load_bytes(bytes, file_name, path),
-                IoEvent::Saved { primary, path } => {
+                IoEvent::Saved {
+                    primary,
+                    path,
+                    backup,
+                    file_name,
+                } => {
+                    let is_native = path.is_some();
                     if let Some(doc) = &mut self.doc {
                         if primary {
                             doc.mark_saved();
@@ -279,13 +333,32 @@ impl App {
                             publish_dirty(doc.dirty);
                         }
                     }
+                    let mut message = if !is_native {
+                        format!("Download started: {file_name}")
+                    } else if primary {
+                        format!("Saved to {file_name}")
+                    } else {
+                        format!("Copy of original saved to {file_name}")
+                    };
+                    if let Some(backup) = backup {
+                        if let Some(name) = backup.file_name() {
+                            message.push_str(&format!(" — backup: {}", name.to_string_lossy()));
+                        }
+                    }
+                    self.toast = Some(Toast {
+                        message,
+                        expires_at: now + TOAST_SECONDS,
+                    });
                 }
                 IoEvent::Cancelled => {}
-                IoEvent::Error(message) => self.error = Some(message),
+                IoEvent::Error(e) => self.error = Some(e),
             }
         }
     }
 
+    /// Route a dropped file through the same unsaved-changes guard as
+    /// File → Open: with unsaved edits, the payload is stashed and a
+    /// confirmation modal decides its fate.
     fn handle_dropped_files(&mut self, ctx: &egui::Context) {
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         let Some(file) = dropped.into_iter().next() else {
@@ -297,7 +370,14 @@ impl App {
             } else {
                 file.name.clone()
             };
-            self.load_bytes(bytes.to_vec(), name, None);
+            self.request(
+                ctx,
+                PendingAction::LoadDropped {
+                    bytes: bytes.to_vec(),
+                    file_name: name,
+                    path: None,
+                },
+            );
         } else if let Some(path) = file.path {
             match std::fs::read(&path) {
                 Ok(bytes) => {
@@ -305,9 +385,16 @@ impl App {
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_else(|| "dropped.sav".to_owned());
-                    self.load_bytes(bytes, name, Some(path));
+                    self.request(
+                        ctx,
+                        PendingAction::LoadDropped {
+                            bytes,
+                            file_name: name,
+                            path: Some(path),
+                        },
+                    );
                 }
-                Err(e) => self.error = Some(format!("could not read {}: {e}", path.display())),
+                Err(source) => self.error = Some(AppError::Read { path, source }),
             }
         }
     }
@@ -323,6 +410,16 @@ impl App {
             self.pending = Some(action);
         } else {
             self.perform(ctx, action);
+        }
+    }
+
+    /// The confirm-discard modal was decided: perform the stashed action
+    /// (`discard == true`) or drop it.
+    fn resolve_pending(&mut self, ctx: &egui::Context, discard: bool) {
+        if let Some(action) = self.pending.take() {
+            if discard {
+                self.perform(ctx, action);
+            }
         }
     }
 
@@ -350,6 +447,11 @@ impl App {
                 self.close_confirmed = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
+            PendingAction::LoadDropped {
+                bytes,
+                file_name,
+                path,
+            } => self.load_bytes(bytes, file_name, path),
         }
     }
 
@@ -372,26 +474,54 @@ impl App {
         io::spawn_save(self.io_tx.clone(), ctx.clone(), request);
     }
 
+    fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        if ctx.input_mut(|i| i.consume_shortcut(&SHORTCUT_OPEN)) {
+            self.request(ctx, PendingAction::Open);
+        }
+        if ctx.input_mut(|i| i.consume_shortcut(&SHORTCUT_SAVE)) && self.doc.is_some() {
+            self.start_save(ctx, true);
+        }
+        if ctx.input_mut(|i| i.consume_shortcut(&SHORTCUT_NEW)) {
+            self.request(ctx, PendingAction::New(GameVariant::RedBlue));
+        }
+    }
+
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
         let ctx = &ui.ctx().clone();
         egui::Panel::top("menu_bar").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     ui.menu_button("New", |ui| {
-                        if ui.button("Red / Blue").clicked() {
+                        if ui
+                            .add(
+                                egui::Button::new("Red / Blue")
+                                    .shortcut_text(ctx.format_shortcut(&SHORTCUT_NEW)),
+                            )
+                            .clicked()
+                        {
                             self.request(ctx, PendingAction::New(GameVariant::RedBlue));
                         }
                         if ui.button("Yellow").clicked() {
                             self.request(ctx, PendingAction::New(GameVariant::Yellow));
                         }
                     });
-                    if ui.button("Open…").clicked() {
+                    if ui
+                        .add(
+                            egui::Button::new("Open…")
+                                .shortcut_text(ctx.format_shortcut(&SHORTCUT_OPEN)),
+                        )
+                        .clicked()
+                    {
                         self.request(ctx, PendingAction::Open);
                     }
                     ui.separator();
                     let has_doc = self.doc.is_some();
                     if ui
-                        .add_enabled(has_doc, egui::Button::new("Save…"))
+                        .add_enabled(
+                            has_doc,
+                            egui::Button::new("Save…")
+                                .shortcut_text(ctx.format_shortcut(&SHORTCUT_SAVE)),
+                        )
                         .clicked()
                     {
                         self.start_save(ctx, true);
@@ -424,8 +554,9 @@ impl App {
                         if ui
                             .button("Fix all checksums now")
                             .on_hover_text(
-                                "Recompute and store all 15 checksums, repairing a file that \
-                                 was already corrupt on load",
+                                "Recompute and store all 15 checksums (also unpinning any \
+                                 hand-edited checksum bytes), repairing a file that was \
+                                 already corrupt on load",
                             )
                             .clicked()
                         {
@@ -439,34 +570,51 @@ impl App {
     }
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
+        let now = ui.ctx().input(|i| i.time);
+        if self.toast.as_ref().is_some_and(|t| t.expires_at <= now) {
+            self.toast = None;
+        }
         egui::Panel::bottom("status_bar").show(ui, |ui| {
-            ui.horizontal(|ui| match &mut self.doc {
-                Some(doc) => {
-                    if doc.dirty {
-                        ui.colored_label(ui.visuals().warn_fg_color, "●")
-                            .on_hover_text("Unsaved changes");
+            ui.horizontal(|ui| {
+                match &mut self.doc {
+                    Some(doc) => {
+                        if doc.dirty {
+                            ui.colored_label(ui.visuals().warn_fg_color, "●")
+                                .on_hover_text("Unsaved changes");
+                        }
+                        ui.label(&doc.file_name);
+                        ui.separator();
+                        ui.label("Variant:");
+                        let variant_hover = "Label only — the save layout is identical";
+                        ui.selectable_value(&mut doc.variant, GameVariant::RedBlue, "Red/Blue")
+                            .on_hover_text(variant_hover);
+                        ui.selectable_value(&mut doc.variant, GameVariant::Yellow, "Yellow")
+                            .on_hover_text(variant_hover);
+                        ui.separator();
+                        let warnings = doc.warning_count();
+                        if warnings == 0 {
+                            ui.label("no warnings");
+                        } else if ui.link(format!("⚠ {warnings} warning(s)")).clicked() {
+                            self.screen = Screen::Overview;
+                        }
+                        ui.separator();
+                        ui.label(doc.save.game_label());
                     }
-                    ui.label(&doc.file_name);
-                    ui.separator();
-                    ui.label("Variant:");
-                    ui.selectable_value(&mut doc.variant, GameVariant::RedBlue, "Red/Blue")
-                        .on_hover_text("Label only — the save layout is identical");
-                    ui.selectable_value(&mut doc.variant, GameVariant::Yellow, "Yellow");
-                    ui.separator();
-                    let warnings = doc.warning_count();
-                    let text = if warnings == 0 {
-                        "no warnings".to_owned()
-                    } else {
-                        format!("⚠ {warnings} warning(s)")
-                    };
-                    if ui.link(text).clicked() {
-                        self.screen = Screen::Overview;
+                    None => {
+                        ui.label("No file loaded — File → Open, or drop a .sav here");
                     }
-                    ui.separator();
-                    ui.label(doc.save.game_label());
                 }
-                None => {
-                    ui.label("No file loaded — File → Open, or drop a .sav here");
+                if let Some(toast) = &self.toast {
+                    ui.separator();
+                    let message = toast.message.clone();
+                    ui.colored_label(ui.visuals().hyperlink_color, message);
+                    if ui.small_button("✕").on_hover_text("Dismiss").clicked() {
+                        self.toast = None;
+                    } else {
+                        // Wake up in time to expire the toast.
+                        ui.ctx()
+                            .request_repaint_after(std::time::Duration::from_secs(1));
+                    }
                 }
             });
         });
@@ -497,11 +645,10 @@ impl App {
     }
 
     fn central(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
         egui::CentralPanel::default().show(ui, |ui| {
             let Some(doc) = &mut self.doc else {
-                ui.centered_and_justified(|ui| {
-                    ui.label("Open a Gen 1 save file (.sav / .srm) to start editing.");
-                });
+                self.empty_state(ui, &ctx);
                 return;
             };
             let mut goto: Option<(Screen, usize)> = None;
@@ -511,7 +658,7 @@ impl App {
                 Screen::Party => screens::party::ui(ui, doc, &mut self.ui.party),
                 Screen::Boxes => screens::boxes::ui(ui, doc, &mut self.ui.boxes),
                 Screen::Items => screens::items::ui(ui, doc, &mut self.ui.items),
-                Screen::Pokedex => screens::pokedex::ui(ui, doc),
+                Screen::Pokedex => screens::pokedex::ui(ui, doc, &mut self.ui.pokedex),
                 Screen::Flags => screens::flags::ui(ui, doc, &mut self.ui.flags),
                 Screen::Map => screens::map::ui(ui, doc, &mut self.ui.map),
                 Screen::HallOfFame => screens::hof::ui(ui, doc, &mut self.ui.hof),
@@ -524,8 +671,36 @@ impl App {
         });
     }
 
+    /// The no-document landing screen: prominent Open / New actions plus
+    /// a drag-and-drop hint.
+    fn empty_state(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.vertical_centered(|ui| {
+            ui.add_space(ui.available_height() * 0.25);
+            ui.heading("pksave — Gen 1 save editor");
+            ui.add_space(8.0);
+            ui.label("Open a Pokémon Red/Blue/Yellow save file (.sav / .srm) to start editing.");
+            ui.add_space(16.0);
+            ui.horizontal(|ui| {
+                // Center the button row.
+                let width = 330.0;
+                ui.add_space((ui.available_width() - width).max(0.0) / 2.0);
+                if ui.button("📂 Open a save file…").clicked() {
+                    self.request(ctx, PendingAction::Open);
+                }
+                if ui.button("✚ New Red/Blue").clicked() {
+                    self.request(ctx, PendingAction::New(GameVariant::RedBlue));
+                }
+                if ui.button("✚ New Yellow").clicked() {
+                    self.request(ctx, PendingAction::New(GameVariant::Yellow));
+                }
+            });
+            ui.add_space(12.0);
+            ui.weak("…or drag and drop a .sav file anywhere in this window.");
+        });
+    }
+
     fn modals(&mut self, ctx: &egui::Context) {
-        if let Some(action) = self.pending {
+        if self.pending.is_some() {
             let mut decided: Option<bool> = None;
             egui::Modal::new(egui::Id::new("confirm_discard")).show(ctx, |ui| {
                 ui.heading("Unsaved changes");
@@ -540,17 +715,12 @@ impl App {
                     }
                 });
             });
-            match decided {
-                Some(true) => {
-                    self.pending = None;
-                    self.perform(ctx, action);
-                }
-                Some(false) => self.pending = None,
-                None => {}
+            if let Some(discard) = decided {
+                self.resolve_pending(ctx, discard);
             }
         }
 
-        if let Some(message) = self.error.clone() {
+        if let Some(message) = self.error.as_ref().map(|e| e.to_string()) {
             let mut close = false;
             egui::Modal::new(egui::Id::new("error_modal")).show(ctx, |ui| {
                 ui.heading("Error");
@@ -579,8 +749,10 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        self.poll_io();
+        let now = ctx.input(|i| i.time);
+        self.poll_io(now);
         self.handle_dropped_files(&ctx);
+        self.handle_shortcuts(&ctx);
         #[cfg(not(target_arch = "wasm32"))]
         self.handle_close_request(&ctx);
 
@@ -624,6 +796,19 @@ mod tests {
         assert!(!doc.changed.is_empty());
         // The throttle resets: no touch, no recompute.
         assert!(!doc.end_frame());
+    }
+
+    #[test]
+    fn serialized_cache_tracks_touches() {
+        let mut doc = empty_doc();
+        assert_eq!(doc.serialized(), doc.original.as_slice());
+        doc.save.set_player_id(0xBEEF);
+        // Stale until end_frame.
+        assert_eq!(doc.serialized(), doc.original.as_slice());
+        doc.touch();
+        doc.end_frame();
+        assert_eq!(doc.serialized(), doc.save.to_bytes().as_slice());
+        assert_ne!(doc.serialized(), doc.original.as_slice());
     }
 
     #[test]
@@ -673,5 +858,240 @@ mod tests {
         let doc = Doc::from_bytes(bytes, "z.sav".into(), None).expect("valid length");
         let sum: usize = Screen::ALL.iter().map(|&s| doc.badge_count(s)).sum();
         assert_eq!(sum, doc.warning_count());
+    }
+
+    // ---- io-event flow (J1) ----
+
+    fn valid_save_bytes() -> Vec<u8> {
+        SaveFile::new_empty(GameVariant::RedBlue).to_bytes()
+    }
+
+    #[test]
+    fn opened_event_loads_a_doc_and_clears_dialog_flag() {
+        let mut app = App::new();
+        app.dialog_open = true;
+        app.io_tx
+            .send(IoEvent::Opened {
+                file_name: "poke.sav".into(),
+                bytes: valid_save_bytes(),
+                path: Some(std::path::PathBuf::from("/tmp/poke.sav")),
+            })
+            .expect("send");
+        app.poll_io(0.0);
+        assert!(!app.dialog_open);
+        let doc = app.doc.as_ref().expect("doc loaded");
+        assert_eq!(doc.file_name, "poke.sav");
+        assert_eq!(
+            doc.path.as_deref(),
+            Some(std::path::Path::new("/tmp/poke.sav"))
+        );
+        assert!(!doc.dirty);
+        assert!(app.error.is_none());
+    }
+
+    #[test]
+    fn opened_event_with_short_bytes_sets_load_error() {
+        let mut app = App::new();
+        app.io_tx
+            .send(IoEvent::Opened {
+                file_name: "tiny.sav".into(),
+                bytes: vec![0u8; 16],
+                path: None,
+            })
+            .expect("send");
+        app.poll_io(0.0);
+        assert!(app.doc.is_none());
+        assert!(matches!(app.error, Some(AppError::Load(_))));
+    }
+
+    #[test]
+    fn saved_event_rebaselines_updates_path_and_toasts() {
+        let mut app = App::new();
+        let mut doc = empty_doc();
+        doc.save.set_player_id(0xABCD);
+        doc.touch();
+        doc.end_frame();
+        assert!(doc.dirty);
+        app.doc = Some(doc);
+        app.dialog_open = true;
+        app.io_tx
+            .send(IoEvent::Saved {
+                primary: true,
+                path: Some(std::path::PathBuf::from("/tmp/renamed.sav")),
+                backup: Some(std::path::PathBuf::from("/tmp/renamed.sav.bak-x")),
+                file_name: "renamed.sav".into(),
+            })
+            .expect("send");
+        app.poll_io(1.0);
+        assert!(!app.dialog_open);
+        let doc = app.doc.as_ref().expect("doc");
+        assert!(!doc.dirty, "saved: edits became the new baseline");
+        assert_eq!(doc.file_name, "renamed.sav");
+        assert_eq!(
+            doc.path.as_deref(),
+            Some(std::path::Path::new("/tmp/renamed.sav"))
+        );
+        let toast = app.toast.as_ref().expect("toast");
+        assert!(toast.message.contains("Saved to renamed.sav"));
+        assert!(toast.message.contains("backup: renamed.sav.bak-x"));
+        assert!(toast.expires_at > 1.0);
+    }
+
+    #[test]
+    fn non_primary_save_keeps_baseline_and_name() {
+        let mut app = App::new();
+        let mut doc = empty_doc();
+        doc.save.set_player_id(0xABCD);
+        doc.touch();
+        doc.end_frame();
+        app.doc = Some(doc);
+        app.io_tx
+            .send(IoEvent::Saved {
+                primary: false,
+                path: Some(std::path::PathBuf::from("/tmp/copy.sav")),
+                backup: None,
+                file_name: "copy.sav".into(),
+            })
+            .expect("send");
+        app.poll_io(0.0);
+        let doc = app.doc.as_ref().expect("doc");
+        assert!(doc.dirty, "copy of original does not rebaseline");
+        assert_eq!(doc.file_name, "new.sav");
+        let toast = app.toast.as_ref().expect("toast");
+        assert!(toast.message.contains("Copy of original saved to copy.sav"));
+    }
+
+    #[test]
+    fn wasm_style_saved_event_toasts_download() {
+        let mut app = App::new();
+        app.doc = Some(empty_doc());
+        app.io_tx
+            .send(IoEvent::Saved {
+                primary: true,
+                path: None,
+                backup: None,
+                file_name: "new.sav".into(),
+            })
+            .expect("send");
+        app.poll_io(0.0);
+        let toast = app.toast.as_ref().expect("toast");
+        assert_eq!(toast.message, "Download started: new.sav");
+    }
+
+    #[test]
+    fn error_and_cancelled_events() {
+        let mut app = App::new();
+        app.dialog_open = true;
+        app.io_tx.send(IoEvent::Cancelled).expect("send");
+        app.poll_io(0.0);
+        assert!(!app.dialog_open);
+        assert!(app.error.is_none());
+
+        app.io_tx
+            .send(IoEvent::Error(AppError::WasmSave("boom".into())))
+            .expect("send");
+        app.poll_io(0.0);
+        assert!(matches!(app.error, Some(AppError::WasmSave(_))));
+    }
+
+    // ---- dirty / unsaved-changes guard (J2) ----
+
+    fn dropped_action(name: &str) -> PendingAction {
+        PendingAction::LoadDropped {
+            bytes: valid_save_bytes(),
+            file_name: name.to_owned(),
+            path: None,
+        }
+    }
+
+    fn make_dirty(app: &mut App) {
+        let doc = app.doc.as_mut().expect("doc");
+        doc.save.set_player_id(0x7777);
+        doc.touch();
+        doc.end_frame();
+        assert!(doc.dirty);
+    }
+
+    #[test]
+    fn clean_request_performs_immediately() {
+        let ctx = egui::Context::default();
+        let mut app = App::new();
+        app.request(&ctx, dropped_action("dropped.sav"));
+        assert!(app.pending.is_none());
+        assert_eq!(
+            app.doc.as_ref().map(|d| d.file_name.as_str()),
+            Some("dropped.sav")
+        );
+    }
+
+    #[test]
+    fn dirty_request_stashes_a_pending_action() {
+        let ctx = egui::Context::default();
+        let mut app = App::new();
+        app.doc = Some(empty_doc());
+        make_dirty(&mut app);
+        app.request(&ctx, dropped_action("dropped.sav"));
+        assert!(app.pending.is_some(), "guarded: not performed yet");
+        assert_eq!(
+            app.doc.as_ref().map(|d| d.file_name.as_str()),
+            Some("new.sav"),
+            "old doc still loaded"
+        );
+    }
+
+    #[test]
+    fn discard_performs_the_pending_drop() {
+        let ctx = egui::Context::default();
+        let mut app = App::new();
+        app.doc = Some(empty_doc());
+        make_dirty(&mut app);
+        app.request(&ctx, dropped_action("dropped.sav"));
+        app.resolve_pending(&ctx, true);
+        assert!(app.pending.is_none());
+        let doc = app.doc.as_ref().expect("doc");
+        assert_eq!(doc.file_name, "dropped.sav");
+        assert!(!doc.dirty);
+    }
+
+    #[test]
+    fn cancel_clears_the_pending_action_and_keeps_edits() {
+        let ctx = egui::Context::default();
+        let mut app = App::new();
+        app.doc = Some(empty_doc());
+        make_dirty(&mut app);
+        app.request(&ctx, dropped_action("dropped.sav"));
+        app.resolve_pending(&ctx, false);
+        assert!(app.pending.is_none());
+        let doc = app.doc.as_ref().expect("doc");
+        assert_eq!(doc.file_name, "new.sav");
+        assert!(doc.dirty, "edits survive a cancelled discard");
+    }
+
+    #[test]
+    fn guarded_revert_restores_the_baseline() {
+        let ctx = egui::Context::default();
+        let mut app = App::new();
+        app.doc = Some(empty_doc());
+        let baseline = app.doc.as_ref().expect("doc").original.clone();
+        make_dirty(&mut app);
+        app.request(&ctx, PendingAction::Revert);
+        assert!(app.pending.is_some());
+        app.resolve_pending(&ctx, true);
+        let doc = app.doc.as_ref().expect("doc");
+        assert!(!doc.dirty);
+        assert_eq!(doc.save.to_bytes(), baseline);
+    }
+
+    #[test]
+    fn guarded_new_replaces_the_doc_only_on_discard() {
+        let ctx = egui::Context::default();
+        let mut app = App::new();
+        app.doc = Some(empty_doc());
+        make_dirty(&mut app);
+        app.request(&ctx, PendingAction::New(GameVariant::Yellow));
+        app.resolve_pending(&ctx, true);
+        let doc = app.doc.as_ref().expect("doc");
+        assert_eq!(doc.variant, GameVariant::Yellow);
+        assert!(!doc.dirty);
     }
 }

@@ -20,6 +20,7 @@ pub struct ScreenState {
     pub party: party::PartyState,
     pub boxes: boxes::BoxesState,
     pub items: items::ItemsState,
+    pub pokedex: pokedex::PokedexState,
     pub flags: flags::FlagsState,
     pub map: map::MapState,
     pub hof: hof::HofState,
