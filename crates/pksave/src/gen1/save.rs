@@ -18,8 +18,18 @@ use core::ops::Range;
 
 use thiserror::Error;
 
-use super::{checksum, offsets};
+use super::{checksum, offsets, text};
 use crate::{Diagnostic, SaveGame, Severity};
+
+/// Which Gen 1 cartridge a save targets. The layout is identical
+/// (see `docs/FORMAT.md` § Red/Blue vs Yellow); the variant only changes
+/// which defaults make sense (Yellow gives meaning to the Pikachu
+/// friendship byte).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GameVariant {
+    RedBlue,
+    Yellow,
+}
 
 /// Failure to load a save image. The only fatal condition is a buffer too
 /// short to be a 32 KiB SRAM dump.
@@ -39,6 +49,68 @@ pub struct SaveFile {
 }
 
 impl SaveFile {
+    /// Build a minimal, bootable blank save (exactly 32 KiB):
+    ///
+    /// - player name `"RED"`, rival name `"BLUE"`,
+    /// - options: medium text speed (3), animations on, battle style
+    ///   Shift; letter-delay flags = 1 as `InitOptions` sets them,
+    /// - boxes-initialized flag set (bit 7 of [`offsets::CURRENT_BOX_NUM`]),
+    ///   current box 0,
+    /// - bag/PC item lists empty (count 0, `0xFF` terminator),
+    /// - party count 0 with `0xFF` species sentinel; likewise all 12 bank
+    ///   boxes and the current-box working copy,
+    /// - Pokédex clear, money/coins zero (valid BCD), daycare empty,
+    /// - all 15 checksums valid.
+    ///
+    /// For [`GameVariant::Yellow`] the Pikachu friendship byte is set to
+    /// 90, the game's starting friendship; for `RedBlue` that byte is
+    /// unused and left 0. The result is *not* marked edited, so it
+    /// round-trips byte-identically.
+    pub fn new_empty(variant: GameVariant) -> SaveFile {
+        let mut raw = vec![0u8; offsets::SRAM_SIZE];
+
+        let name = |s: &str| text::encode(s, offsets::NAME_LEN).expect("default name fits");
+        raw[offsets::PLAYER_NAME..offsets::PLAYER_NAME + offsets::NAME_LEN]
+            .copy_from_slice(&name("RED"));
+        raw[offsets::RIVAL_NAME..offsets::RIVAL_NAME + offsets::NAME_LEN]
+            .copy_from_slice(&name("BLUE"));
+
+        // Medium text speed; InitOptions also sets the letter-delay flags
+        // to 1 (BIT_FAST_TEXT_DELAY).
+        raw[offsets::OPTIONS] = 3;
+        raw[offsets::LETTER_DELAY] = 1;
+
+        // Bit 7 = boxes initialized (must stay set), bits 0-6 = box 0.
+        raw[offsets::CURRENT_BOX_NUM] = 0x80;
+
+        // Empty terminated lists: count 0, 0xFF right after.
+        raw[offsets::BAG_ITEM_COUNT] = 0;
+        raw[offsets::BAG_ITEMS] = 0xFF;
+        raw[offsets::PC_ITEM_COUNT] = 0;
+        raw[offsets::PC_ITEMS] = 0xFF;
+
+        // Party: count 0, species-list sentinel.
+        raw[offsets::PARTY] = 0;
+        raw[offsets::PARTY + 1] = 0xFF;
+
+        // All 12 bank boxes plus the current-box working copy.
+        for n in 0..offsets::NUM_BOXES {
+            raw[offsets::box_offset(n)] = 0;
+            raw[offsets::box_offset(n) + 1] = 0xFF;
+        }
+        raw[offsets::CURRENT_BOX] = 0;
+        raw[offsets::CURRENT_BOX + 1] = 0xFF;
+
+        if variant == GameVariant::Yellow {
+            raw[offsets::PIKACHU_FRIENDSHIP] = 90;
+        }
+
+        // Pokédex, money, coins, play time, daycare-in-use are all-zero
+        // already, which is exactly their empty encoding.
+        checksum::fix_all(&mut raw);
+        SaveFile { raw, edited: false }
+    }
+
     /// Wrap raw save bytes. Errors only if `bytes` is shorter than
     /// [`offsets::SRAM_SIZE`]; longer files (64 KiB pads, RTC footers)
     /// load fine and keep their tail.
@@ -323,6 +395,70 @@ mod tests {
                 offsets::BANK3_ALL_BOXES_CHECKSUM..offsets::BANK3_ALL_BOXES_CHECKSUM + 7,
             ]
         );
+    }
+
+    #[test]
+    fn new_empty_has_no_diagnostics() {
+        for variant in [GameVariant::RedBlue, GameVariant::Yellow] {
+            let save = SaveFile::new_empty(variant);
+            assert_eq!(save.diagnostics(), Vec::new(), "{variant:?}");
+        }
+    }
+
+    #[test]
+    fn new_empty_round_trips_and_reloads() {
+        let save = SaveFile::new_empty(GameVariant::RedBlue);
+        assert!(!save.is_edited());
+        let bytes = save.to_bytes();
+        assert_eq!(bytes.len(), offsets::SRAM_SIZE);
+        assert_eq!(bytes, save.as_bytes());
+        let reloaded = SaveFile::from_bytes(bytes.clone()).expect("length is valid");
+        assert_eq!(reloaded.to_bytes(), bytes);
+        assert!(reloaded.diagnostics().is_empty());
+    }
+
+    #[test]
+    fn new_empty_sets_the_documented_fields() {
+        let save = SaveFile::new_empty(GameVariant::RedBlue);
+        let b = save.as_bytes();
+        assert_eq!(
+            &b[offsets::PLAYER_NAME..offsets::PLAYER_NAME + 4],
+            &[0x91, 0x84, 0x83, 0x50] // "RED" + terminator
+        );
+        assert_eq!(
+            &b[offsets::RIVAL_NAME..offsets::RIVAL_NAME + 5],
+            &[0x81, 0x8B, 0x94, 0x84, 0x50] // "BLUE" + terminator
+        );
+        assert_eq!(b[offsets::OPTIONS], 3);
+        assert_eq!(b[offsets::LETTER_DELAY], 1);
+        assert_eq!(b[offsets::CURRENT_BOX_NUM], 0x80);
+        assert_eq!(b[offsets::BAG_ITEM_COUNT], 0);
+        assert_eq!(b[offsets::BAG_ITEMS], 0xFF);
+        assert_eq!(b[offsets::PC_ITEM_COUNT], 0);
+        assert_eq!(b[offsets::PC_ITEMS], 0xFF);
+        assert_eq!(b[offsets::PARTY], 0);
+        assert_eq!(b[offsets::PARTY + 1], 0xFF);
+        for n in 0..offsets::NUM_BOXES {
+            assert_eq!(b[offsets::box_offset(n)], 0, "box {n} count");
+            assert_eq!(b[offsets::box_offset(n) + 1], 0xFF, "box {n} sentinel");
+        }
+        assert_eq!(b[offsets::CURRENT_BOX], 0);
+        assert_eq!(b[offsets::CURRENT_BOX + 1], 0xFF);
+        assert_eq!(
+            &b[offsets::POKEDEX_OWNED..offsets::POKEDEX_SEEN + offsets::POKEDEX_LEN],
+            &[0u8; 2 * offsets::POKEDEX_LEN][..]
+        );
+        assert_eq!(&b[offsets::MONEY..offsets::MONEY + 3], &[0, 0, 0]);
+        assert_eq!(&b[offsets::COINS..offsets::COINS + 2], &[0, 0]);
+        assert_eq!(b[offsets::DAYCARE_IN_USE], 0);
+        assert_eq!(b[offsets::PIKACHU_FRIENDSHIP], 0);
+    }
+
+    #[test]
+    fn new_empty_yellow_sets_starting_friendship() {
+        let save = SaveFile::new_empty(GameVariant::Yellow);
+        assert_eq!(save.as_bytes()[offsets::PIKACHU_FRIENDSHIP], 90);
+        assert!(save.diagnostics().is_empty());
     }
 
     #[test]
