@@ -424,6 +424,74 @@ fn sync_current_box_to_bank_copies_the_working_copy() {
 }
 
 #[test]
+fn sync_current_box_to_bank_is_a_no_op_when_box_number_is_corrupt() {
+    let mut bytes = SaveFile::new_empty(GameVariant::RedBlue).to_bytes();
+    // Bit 7 (boxes initialized) + box number 12, one past the last box.
+    bytes[offsets::CURRENT_BOX_NUM] = 0x8C;
+    // Make the working copy distinctive so an unguarded copy_within
+    // could not silently write identical bytes.
+    bytes[offsets::CURRENT_BOX + 0x20] = 0xAB;
+    let mut save = SaveFile::from_bytes(bytes.clone()).expect("length is valid");
+
+    save.sync_current_box_to_bank();
+    assert!(!save.is_edited(), "the no-op guard must not mark_edited");
+    assert_eq!(
+        save.to_bytes(),
+        bytes,
+        "corrupt current-box number: sync must be a data no-op"
+    );
+}
+
+#[test]
+fn add_raw_to_a_full_box_fails_without_touching_bytes() {
+    let mut save = SaveFile::new_empty(GameVariant::RedBlue);
+    let mut bx = save.box_mut(4);
+    for i in 0..offsets::MONS_PER_BOX {
+        bx.add(&make_box_mon(1 + (i % 151), 9), "RED", "MON")
+            .expect("room");
+    }
+    assert_eq!(bx.len(), offsets::MONS_PER_BOX);
+
+    let raw_before = save.as_bytes().to_vec();
+    let serialized_before = save.to_bytes();
+    let mut bx = save.box_mut(4);
+    assert_eq!(
+        bx.add_raw(
+            &make_box_mon(151, 30),
+            &[0x50; offsets::NAME_LEN],
+            &[0x50; offsets::NAME_LEN],
+        ),
+        Err(BoxError::Full)
+    );
+    assert_eq!(
+        save.as_bytes(),
+        &raw_before[..],
+        "failed add_raw writes nothing"
+    );
+    assert_eq!(
+        save.to_bytes(),
+        serialized_before,
+        "failed add_raw must serialize byte-identically"
+    );
+}
+
+#[test]
+fn box_swap_of_a_slot_with_itself_is_byte_identical() {
+    let mut save = SaveFile::new_empty(GameVariant::RedBlue);
+    let mut bx = save.box_mut(1);
+    bx.add(&make_box_mon(1, 5), "A", "BULBA").expect("room");
+    bx.add(&make_box_mon(4, 6), "B", "CHAR").expect("room");
+
+    let before = save.as_bytes().to_vec();
+    save.box_mut(1).swap(1, 1);
+    assert_eq!(
+        save.as_bytes(),
+        &before[..],
+        "swap(i, i) must be a byte-identical no-op"
+    );
+}
+
+#[test]
 fn box_len_clamps_a_corrupt_count_byte() {
     let mut save = SaveFile::new_empty(GameVariant::RedBlue);
     save.buf_edit_for_tests(offsets::box_offset(1), 200);

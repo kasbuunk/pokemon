@@ -23,22 +23,22 @@ fn registry() -> Vec<Edit> {
     vec![
         (
             "set_player_name",
-            Box::new(|s: &mut SaveFile| s.set_player_name("BLAINE").unwrap()) as _,
+            Box::new(|s: &mut SaveFile| s.set_player_name("BLAINE").expect("encodable")) as _,
             span(offsets::PLAYER_NAME, offsets::NAME_LEN),
         ),
         (
             "set_rival_name",
-            Box::new(|s: &mut SaveFile| s.set_rival_name("GARY").unwrap()) as _,
+            Box::new(|s: &mut SaveFile| s.set_rival_name("GARY").expect("encodable")) as _,
             span(offsets::RIVAL_NAME, offsets::NAME_LEN),
         ),
         (
             "set_money",
-            Box::new(|s: &mut SaveFile| s.set_money(987_654).unwrap()) as _,
+            Box::new(|s: &mut SaveFile| s.set_money(987_654).expect("in range")) as _,
             span(offsets::MONEY, 3),
         ),
         (
             "set_coins",
-            Box::new(|s: &mut SaveFile| s.set_coins(1234).unwrap()) as _,
+            Box::new(|s: &mut SaveFile| s.set_coins(1234).expect("in range")) as _,
             span(offsets::COINS, 2),
         ),
         (
@@ -126,16 +126,16 @@ fn registry() -> Vec<Edit> {
         ),
         (
             "bag add",
-            Box::new(|s: &mut SaveFile| s.bag_items_mut().add(0x14, 3).unwrap()) as _,
+            Box::new(|s: &mut SaveFile| s.bag_items_mut().add(0x14, 3).expect("has room")) as _,
             BAG_LIST.region(),
         ),
         (
             "bag add+remove+set_qty+set_id+swap",
             Box::new(|s: &mut SaveFile| {
                 let mut bag = s.bag_items_mut();
-                bag.add(0x14, 3).unwrap();
-                bag.add(0x01, 1).unwrap();
-                bag.add(0x06, 1).unwrap();
+                bag.add(0x14, 3).expect("has room");
+                bag.add(0x01, 1).expect("has room");
+                bag.add(0x06, 1).expect("has room");
                 bag.set_qty(0, 99);
                 bag.set_id(1, 0x02);
                 bag.swap(0, 2);
@@ -147,8 +147,8 @@ fn registry() -> Vec<Edit> {
             "pc add+remove",
             Box::new(|s: &mut SaveFile| {
                 let mut pc = s.pc_items_mut();
-                pc.add(0x0B, 12).unwrap();
-                pc.add(0x0C, 1).unwrap();
+                pc.add(0x0B, 12).expect("has room");
+                pc.add(0x0C, 1).expect("has room");
                 pc.remove(0);
             }) as _,
             PC_LIST.region(),

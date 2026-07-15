@@ -229,6 +229,22 @@ fn desynced_current_box_copies() {
 }
 
 #[test]
+fn corrupt_current_box_number_skips_the_stale_check() {
+    // Stored current-box number 12 (bit 7 = initialized) points past the
+    // last box; diagnose() must not panic and must skip W-BOX-STALE even
+    // though a bank copy differs from the working copy.
+    let save = broken(true, |b| {
+        b[offsets::CURRENT_BOX_NUM] = 0x8C;
+        b[offsets::box_offset(0) + 0x20] = 0x33; // would be "stale" for box 0
+    });
+    let diags = save.diagnostics();
+    assert!(
+        diags.iter().all(|d| d.code != "W-BOX-STALE"),
+        "W-BOX-STALE must be skipped for an out-of-range box number: {diags:?}"
+    );
+}
+
+#[test]
 fn daycare_with_invalid_species() {
     let bad = invalid_species();
     let save = broken(true, |b| {

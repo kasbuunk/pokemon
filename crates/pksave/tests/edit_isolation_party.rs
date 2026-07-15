@@ -13,6 +13,15 @@ use proptest::prelude::*;
 
 const PARTY_END: usize = offsets::PARTY + offsets::PARTY_LEN;
 
+/// Proptest case count: the `PROPTEST_CASES` env var when set (e.g. to
+/// raise coverage in CI), otherwise `default`.
+fn env_cases(default: u32) -> u32 {
+    std::env::var("PROPTEST_CASES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
 #[derive(Debug, Clone)]
 enum Op {
     Add {
@@ -108,7 +117,7 @@ fn check_invariants(
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(ProptestConfig { cases: env_cases(64), ..ProptestConfig::default() })]
 
     #[test]
     fn party_ops_maintain_invariants_and_isolation(ops in vec(op_strategy(), 1..40)) {

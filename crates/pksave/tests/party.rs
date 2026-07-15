@@ -293,6 +293,25 @@ fn edits_mark_the_save_edited_so_checksums_get_fixed() {
 }
 
 #[test]
+fn party_view_and_party_mut_agree_on_is_empty() {
+    let mut save = blank_save();
+    assert!(save.party().is_empty(), "PartyView::is_empty on empty save");
+    assert!(
+        save.party_mut().is_empty(),
+        "PartyMut::is_empty on empty save"
+    );
+
+    save.party_mut()
+        .add(&make_mon(25, 42), "ASH", "SPARKY")
+        .expect("room");
+    assert!(!save.party().is_empty(), "PartyView::is_empty after an add");
+    assert!(
+        !save.party_mut().is_empty(),
+        "PartyMut::is_empty after an add"
+    );
+}
+
+#[test]
 fn corrupt_count_byte_is_clamped_on_read() {
     let mut save = blank_save();
     save.party_mut()
