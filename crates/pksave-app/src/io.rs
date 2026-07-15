@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 
 use crate::error::AppError;
+use crate::history::{Origin, VersionEntry};
 
 /// Result of a background I/O operation, delivered to the UI thread.
 pub enum IoEvent {
@@ -35,11 +36,31 @@ pub enum IoEvent {
         backup: Option<PathBuf>,
         /// Display name of what was saved (the download name on wasm).
         file_name: String,
+        /// The history version recorded *before* the write (native
+        /// primary saves with history enabled; `None` on wasm, where
+        /// the app records through its IndexedDB store instead).
+        version: Option<VersionEntry>,
+        /// Legacy `.bak-*` siblings available for import into the
+        /// history (native primary saves with history enabled).
+        legacy_backups: usize,
+        /// History recording failed; the save itself still succeeded.
+        history_error: Option<String>,
     },
     /// The user dismissed a dialog.
     Cancelled,
     /// Something went wrong; shown to the user.
     Error(AppError),
+}
+
+/// History parameters for one save: how to record the snapshot that is
+/// written (blob + manifest) *before* the save file itself.
+#[derive(Debug, Clone)]
+pub struct SaveHistory {
+    pub origin: Origin,
+    /// For [`Origin::Restore`]: the version that was restored.
+    pub parent_id: Option<u64>,
+    /// Prune unnamed versions oldest-first past this count.
+    pub max_versions: Option<usize>,
 }
 
 /// Everything a save flow needs, captured up front so the future owns it.
@@ -52,6 +73,10 @@ pub struct SaveRequest {
     /// timestamped `.bak-YYYYMMDD-HHMMSS` copy is made before overwriting.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub original_path: Option<PathBuf>,
+    /// `Some` to record a history version of a primary save (native; on
+    /// wasm the app records via its own store after the download).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub history: Option<SaveHistory>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -74,6 +99,33 @@ where
 
 fn file_dialog() -> rfd::AsyncFileDialog {
     rfd::AsyncFileDialog::new().add_filter("Gen 1 save", &["sav", "srm", "bak"])
+}
+
+/// Whether a native file-dialog backend exists. rfd on Linux talks to
+/// the XDG desktop portal over the D-Bus session bus and falls back to
+/// the `zenity` CLI; with neither available every dialog silently
+/// resolves to `None`, indistinguishable from a user cancel. Probed
+/// once, on the first dialog request.
+#[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
+pub fn dialog_backend_available() -> bool {
+    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        let has_session_bus =
+            std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some_and(|v| !v.is_empty());
+        has_session_bus || zenity_on_path()
+    })
+}
+
+#[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
+fn zenity_on_path() -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("zenity").is_file()))
+}
+
+/// Every non-Linux target has a built-in dialog backend.
+#[cfg(not(all(not(target_arch = "wasm32"), target_os = "linux")))]
+pub fn dialog_backend_available() -> bool {
+    true
 }
 
 /// Show an open dialog and read the picked file.
@@ -129,18 +181,23 @@ async fn save_flow(request: SaveRequest) -> IoEvent {
         &request.bytes,
         request.original_path.as_deref(),
         request.primary,
+        request.history.as_ref(),
     )
 }
 
 /// The post-dialog body of the native save flow, synchronous and
-/// testable: back up the original when overwriting it, then write and
-/// fsync the picked path.
+/// testable: back up the original when overwriting it, record the
+/// history version (blob → manifest, so a crash can never leave a new
+/// save without its snapshot), then write and fsync the picked path.
+/// The `.bak` backup stays as belt-and-braces beside the history. A
+/// history failure never blocks the save — it is reported in the event.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn write_picked(
     path: &std::path::Path,
     bytes: &[u8],
     original_path: Option<&std::path::Path>,
     primary: bool,
+    history: Option<&SaveHistory>,
 ) -> IoEvent {
     use std::io::Write as _;
 
@@ -156,6 +213,26 @@ pub fn write_picked(
             }
         }
     }
+
+    // History first (issue #9 write order): blob → manifest → save file.
+    let mut version = None;
+    let mut history_error = None;
+    let mut legacy_backups = 0;
+    if let (true, Some(history)) = (primary, history) {
+        let params = crate::history::fs::RecordParams {
+            timestamp: now_secs(),
+            origin: history.origin,
+            parent_id: history.parent_id,
+            label: None,
+            max_versions: history.max_versions,
+        };
+        match crate::history::fs::record_version(path, bytes, &params) {
+            Ok(entry) => version = Some(entry),
+            Err(e) => history_error = Some(e.to_string()),
+        }
+        legacy_backups = crate::history::fs::legacy_backups(path).len();
+    }
+
     let write = || -> std::io::Result<()> {
         let mut file = std::fs::File::create(path)?;
         file.write_all(bytes)?;
@@ -171,6 +248,9 @@ pub fn write_picked(
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| path.display().to_string()),
+            version,
+            legacy_backups,
+            history_error,
         },
         Err(source) => IoEvent::Error(AppError::Write {
             path: path.to_path_buf(),
@@ -266,6 +346,12 @@ async fn save_flow(request: SaveRequest) -> IoEvent {
             path: None,
             backup: None,
             file_name: request.default_file_name,
+            // The app records the version through its IndexedDB store
+            // when it receives this event; no legacy .bak files exist
+            // in the browser.
+            version: None,
+            legacy_backups: 0,
+            history_error: None,
         },
         Err(message) => IoEvent::Error(AppError::WasmSave(message)),
     }
@@ -334,9 +420,9 @@ pub fn backup_timestamp(secs_since_epoch: u64) -> String {
 }
 
 /// Days-since-epoch to (year, month, day), Howard Hinnant's
-/// `civil_from_days` algorithm (proleptic Gregorian).
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
+/// `civil_from_days` algorithm (proleptic Gregorian). Also used by the
+/// history module for display timestamps (both targets).
+pub(crate) fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
     let doe = z - era * 146_097; // [0, 146096]
@@ -388,18 +474,24 @@ mod tests {
     fn write_picked_to_new_path_makes_no_backup() {
         let dir = tempfile::tempdir().expect("tempdir");
         let target = dir.path().join("new.sav");
-        let event = write_picked(&target, b"abc", None, true);
+        let event = write_picked(&target, b"abc", None, true, None);
         match event {
             IoEvent::Saved {
                 primary,
                 path,
                 backup,
                 file_name,
+                version,
+                legacy_backups,
+                history_error,
             } => {
                 assert!(primary);
                 assert_eq!(path.as_deref(), Some(target.as_path()));
                 assert_eq!(backup, None);
                 assert_eq!(file_name, "new.sav");
+                assert_eq!(version, None, "history off: nothing recorded");
+                assert_eq!(legacy_backups, 0);
+                assert_eq!(history_error, None);
             }
             _ => panic!("expected Saved"),
         }
@@ -413,7 +505,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let target = dir.path().join("poke.sav");
         std::fs::write(&target, b"ORIGINAL").expect("seed");
-        let event = write_picked(&target, b"EDITED", Some(&target), true);
+        let event = write_picked(&target, b"EDITED", Some(&target), true, None);
         let backup = match event {
             IoEvent::Saved { backup, .. } => backup.expect("backup path"),
             _ => panic!("expected Saved"),
@@ -431,11 +523,119 @@ mod tests {
         std::fs::write(&target, b"ORIGINAL").expect("seed");
         // The "picked" path spells the same file with a `.` component.
         let alt = dir.path().join(".").join("poke.sav");
-        let event = write_picked(&alt, b"EDITED", Some(&target), true);
+        let event = write_picked(&alt, b"EDITED", Some(&target), true, None);
         match event {
             IoEvent::Saved { backup, .. } => assert!(backup.is_some(), "backup expected"),
             _ => panic!("expected Saved"),
         }
+    }
+
+    // ---- history recording in the save flow (issue #9) ----------------
+
+    fn history_params() -> SaveHistory {
+        SaveHistory {
+            origin: Origin::Save,
+            parent_id: None,
+            max_versions: None,
+        }
+    }
+
+    #[test]
+    fn write_picked_records_a_version_before_writing_the_save() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("poke.srm");
+        let event = write_picked(&target, b"SNAPSHOT", None, true, Some(&history_params()));
+        let version = match event {
+            IoEvent::Saved {
+                version,
+                history_error,
+                ..
+            } => {
+                assert_eq!(history_error, None);
+                version.expect("a version was recorded")
+            }
+            _ => panic!("expected Saved"),
+        };
+        assert_eq!(version.id, 1);
+        assert_eq!(version.origin, Origin::Save);
+        // The snapshot is on disk, restorable, equal to the save.
+        assert_eq!(
+            crate::history::fs::load_blob(&target, version.id).expect("blob"),
+            b"SNAPSHOT"
+        );
+        assert_eq!(std::fs::read(&target).expect("save"), b"SNAPSHOT");
+    }
+
+    #[test]
+    fn write_picked_carries_restore_lineage_into_the_manifest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("poke.srm");
+        write_picked(&target, b"v1", None, true, Some(&history_params()));
+        let event = write_picked(
+            &target,
+            b"restored",
+            Some(&target),
+            true,
+            Some(&SaveHistory {
+                origin: Origin::Restore,
+                parent_id: Some(1),
+                max_versions: None,
+            }),
+        );
+        match event {
+            IoEvent::Saved { version, .. } => {
+                let version = version.expect("recorded");
+                assert_eq!(version.origin, Origin::Restore);
+                assert_eq!(version.parent_id, Some(1));
+            }
+            _ => panic!("expected Saved"),
+        }
+    }
+
+    #[test]
+    fn write_picked_history_failure_still_writes_the_save() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("poke.srm");
+        // Sabotage: a *file* where the history directory must go.
+        std::fs::write(crate::history::fs::history_dir(&target), b"not a directory").expect("seed");
+        let event = write_picked(&target, b"EDITED", None, true, Some(&history_params()));
+        match event {
+            IoEvent::Saved {
+                version,
+                history_error,
+                ..
+            } => {
+                assert_eq!(version, None);
+                assert!(history_error.is_some(), "failure surfaced, not swallowed");
+            }
+            _ => panic!("expected Saved (history failures never block the save)"),
+        }
+        assert_eq!(std::fs::read(&target).expect("save"), b"EDITED");
+    }
+
+    #[test]
+    fn write_picked_counts_legacy_backups_for_the_import_offer() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("poke.srm");
+        std::fs::write(dir.path().join("poke.srm.bak-20260715-123456"), b"old").expect("bak");
+        std::fs::write(dir.path().join("poke.srm.bak-20260714-000000"), b"older").expect("bak");
+        let event = write_picked(&target, b"EDITED", None, true, Some(&history_params()));
+        match event {
+            IoEvent::Saved { legacy_backups, .. } => assert_eq!(legacy_backups, 2),
+            _ => panic!("expected Saved"),
+        }
+    }
+
+    #[test]
+    fn non_primary_write_picked_records_no_version() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("copy.srm");
+        let event = write_picked(&target, b"COPY", None, false, Some(&history_params()));
+        match event {
+            IoEvent::Saved { version, .. } => assert_eq!(version, None),
+            _ => panic!("expected Saved"),
+        }
+        assert!(!crate::history::fs::history_dir(&target).exists());
     }
 
     #[test]
@@ -465,7 +665,7 @@ mod tests {
     fn write_failure_reports_error() {
         let dir = tempfile::tempdir().expect("tempdir");
         let target = dir.path().join("missing-subdir").join("poke.sav");
-        match write_picked(&target, b"abc", None, true) {
+        match write_picked(&target, b"abc", None, true, None) {
             IoEvent::Error(AppError::Write { path, .. }) => assert_eq!(path, target),
             _ => panic!("expected write error"),
         }

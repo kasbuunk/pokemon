@@ -740,7 +740,7 @@ fn daycare_section(ui: &mut egui::Ui, doc: &mut Doc) -> bool {
     ui.horizontal(|ui| {
         let party_full = doc.save.party().len() >= offsets::PARTY_CAPACITY;
         if ui
-            .add_enabled(!party_full, egui::Button::new("Take → party"))
+            .add_enabled(!party_full, egui::Button::new("Take ➡ party"))
             .on_hover_text("Move the mon back to the party (stats recalculated, as in-game)")
             .clicked()
         {

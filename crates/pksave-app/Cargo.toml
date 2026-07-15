@@ -12,6 +12,11 @@ egui_extras = "0.35.0"
 log = "0.4.33"
 pksave = { path = "../pksave" }
 rfd = "0.17.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Pure-Rust SHA-256 (wasm-compatible): content-addressing of history
+# version blobs and the wasm save-identity key.
+sha2 = "0.10"
 thiserror = "2"
 
 [lints]
@@ -52,4 +57,14 @@ web-sys = { version = "0.3.103", features = [
     "Url",
     "HtmlAnchorElement",
     "HtmlElement",
+    # IndexedDB bindings for the wasm history store.
+    "Event",
+    "IdbDatabase",
+    "IdbFactory",
+    "IdbKeyRange",
+    "IdbObjectStore",
+    "IdbOpenDbRequest",
+    "IdbRequest",
+    "IdbTransaction",
+    "IdbTransactionMode",
 ] }

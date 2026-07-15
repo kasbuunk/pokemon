@@ -51,6 +51,7 @@ pub fn ui(ui: &mut egui::Ui, doc: &mut Doc, state: &mut PokedexState) {
     ui.add_space(4.0);
 
     TableBuilder::new(ui)
+        .id_salt("pokedex_table")
         .striped(true)
         .column(Column::exact(44.0))
         .column(Column::exact(130.0))

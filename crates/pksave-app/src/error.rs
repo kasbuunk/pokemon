@@ -40,6 +40,13 @@ pub enum AppError {
     #[error("could not save in the browser: {0}")]
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     WasmSave(String),
+    /// No file-dialog backend exists (Linux without zenity or an XDG
+    /// desktop portal): the dialog would silently do nothing.
+    #[error(
+        "no file dialog backend found — install zenity or xdg-desktop-portal \
+         (or drag and drop a save file onto the window)"
+    )]
+    NoDialogBackend,
     /// The bytes could not be parsed as a Gen 1 save.
     #[error(transparent)]
     Load(#[from] pksave::gen1::save::LoadError),

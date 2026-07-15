@@ -55,7 +55,7 @@ pub fn ui(ui: &mut egui::Ui, doc: &mut Doc, state: &mut BoxesState) {
                     "⚠ The bank copy of this box is stale (differs from the working copy).",
                 );
                 if ui
-                    .button("Sync working copy → bank")
+                    .button("Sync working copy ➡ bank")
                     .on_hover_text(
                         "Copy the live working copy into its bank slot, as a box \
                                     switch does",
@@ -121,7 +121,7 @@ pub fn ui(ui: &mut egui::Ui, doc: &mut Doc, state: &mut BoxesState) {
                 if ui
                     .add_enabled(
                         has_sel && !party_full,
-                        egui::Button::new("Withdraw → party"),
+                        egui::Button::new("Withdraw ➡ party"),
                     )
                     .clicked()
                 {
@@ -189,6 +189,15 @@ pub fn ui(ui: &mut egui::Ui, doc: &mut Doc, state: &mut BoxesState) {
     });
 
     if touched {
+        // A UI-initiated mutation of the current box just changed the
+        // working copy: flush it to its bank slot right away (as an
+        // in-game box switch would), so the app never raises
+        // W-BOX-STALE about its own action. Files that were already
+        // stale on load keep their warning (and the manual sync button)
+        // until this box is edited or synced.
+        if doc.save.box_is_live(n) {
+            doc.save.sync_current_box_to_bank();
+        }
         doc.touch();
     }
 }

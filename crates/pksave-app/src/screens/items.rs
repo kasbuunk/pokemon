@@ -134,7 +134,7 @@ fn list_panel(
                 *add_id = new_id as u8;
             }
             let full = len >= capacity;
-            if ui.add_enabled(!full, egui::Button::new("＋ Add")).clicked() {
+            if ui.add_enabled(!full, egui::Button::new("+ Add")).clicked() {
                 let id = *add_id;
                 let mut ok = false;
                 with_list(doc, which, |list| ok = list.add(id, 1).is_ok());

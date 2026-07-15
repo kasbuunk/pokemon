@@ -21,7 +21,7 @@ pub fn ui(ui: &mut egui::Ui, doc: &mut Doc, goto: &mut Option<(Screen, usize)>) 
         ui.strong(doc.save.player_name());
         ui.label(format!("(ID {:05})", doc.save.player_id()));
         ui.separator();
-        ui.label(format!("₽{}", doc.save.money_lossy()));
+        ui.label(format!("${}", doc.save.money_lossy()));
         ui.separator();
         let t = doc.save.play_time();
         ui.label(format!(
@@ -74,6 +74,7 @@ pub fn ui(ui: &mut egui::Ui, doc: &mut Doc, goto: &mut Option<(Screen, usize)>) 
 
     let diagnostics = doc.diagnostics.clone();
     TableBuilder::new(ui)
+        .id_salt("overview_diagnostics")
         .striped(true)
         .column(Column::auto())
         .column(Column::auto())
@@ -105,7 +106,11 @@ pub fn ui(ui: &mut egui::Ui, doc: &mut Doc, goto: &mut Option<(Screen, usize)>) 
                         ui.colored_label(color, icon);
                     });
                     row.col(|ui| {
-                        ui.monospace(diag.code);
+                        // Codes like W-CHECKSUM-MAIN must not wrap
+                        // mid-token in the auto-sized column.
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(diag.code).monospace()).extend(),
+                        );
                     });
                     row.col(|ui| {
                         ui.label(&diag.message);
