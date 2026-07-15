@@ -5,11 +5,19 @@
 //! mutually coherent: `wCurrentTileBlockMapViewPointer` points into the
 //! WRAM tile-block buffer for the player's current block, the block
 //! coordinates hold the player's parity within a 2×2-tile block, and the
-//! tileset must match the map. Setting the map id alone produces a save
-//! the game will render as garbage or walk-through-walls glitch until
-//! the next warp. [`SaveFile::warp_to`] is a best-effort helper; for
-//! full coherence the tileset and view pointer must also be set to
-//! values captured from a real save on that map.
+//! tileset must match the map.
+//!
+//! Coherence matters more than it looks: on CONTINUE the game *trusts*
+//! the save's cached map-header block instead of rebuilding it from ROM
+//! — pokered's `LoadSAV` sets `BIT_NO_PREVIOUS_MAP` in `wCurMapTileset`,
+//! which makes `LoadMapHeader` return early on the first `EnterMap`. The
+//! trusted block spans `wMapMusicSoundID..wNumBoxItems` ($D35B-$D539):
+//! music id/bank, the view pointer, map dimensions, the map data/text/
+//! script pointers, connections, warps, signs, sprite objects and the
+//! tileset pointers. See `gen1/engine_state.rs`, which bakes a genuine
+//! spawn block into [`SaveFile::new_empty`]. [`SaveFile::warp_to`] is a
+//! best-effort helper; for full coherence the rest of the block must
+//! also hold values captured from a real save on the target map.
 
 use super::data::MAP_NAMES;
 use super::offsets;
@@ -116,11 +124,23 @@ impl SaveFile {
     /// `wYBlockCoord := wYCoord & 1` and `wXBlockCoord := wXCoord & 1` —
     /// the parity of the player inside a 2×2-tile block.
     ///
-    /// **Not** updated (see the module docs): `wLastMap`, the tileset
-    /// and the tile-block view pointer. The save stays loadable (all
-    /// fields are inside the main checksummed region and the checksum is
-    /// recomputed on serialize), but rendering may glitch until those
-    /// are set to values coherent with `map_id`.
+    /// **Not** updated (see the module docs): `wLastMap`, the tileset,
+    /// the tile-block view pointer, and the rest of the cached
+    /// map-header block (`$D35B..$D53A`: music id/bank, dimensions, map
+    /// data/text/script pointers, connections, warps, signs, sprite
+    /// objects, tileset pointers). The save stays loadable (all fields
+    /// are inside the main checksummed region and the checksum is
+    /// recomputed on serialize), but because `LoadSAV` sets
+    /// `BIT_NO_PREVIOUS_MAP` and `LoadMapHeader` then skips the ROM
+    /// reload on CONTINUE, the game keeps running the *previous* map's
+    /// cached header at the new position. On a save the game itself
+    /// wrote (or a [`SaveFile::new_empty`] one, whose block is a genuine
+    /// spawn capture from `gen1/engine_state.rs`) that block is valid,
+    /// so this is survivable — expect a garbled screen and misplaced
+    /// warps/objects until the player passes through a door or map
+    /// connection, which finally reloads the header for `map_id`.
+    /// Warping a save whose cached block is invalid (all zeros) crashes
+    /// the game shortly after CONTINUE.
     pub fn warp_to(&mut self, map_id: u8, x: u8, y: u8) {
         let buf = self.buf_mut();
         buf[offsets::CUR_MAP] = map_id;

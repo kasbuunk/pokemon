@@ -18,26 +18,6 @@ from conftest import FIXTURES_DIR, load_manifest
 
 MANIFEST = load_manifest()
 
-# Known core-crate bug (documented, deliberately not worked around here):
-# on CONTINUE, pokered's LoadSAV sets BIT_NO_PREVIOUS_MAP in wCurMapTileset,
-# which makes LoadMapHeader early-return — the engine then trusts the save's
-# *cached map-header block* (wMapMusicSoundID/ROMBank at D35B/D35C, the tile
-# block map view pointer at D35F, wCurMapHeight/Width at D368/D369, and the
-# map data/text/script pointers at D36A-D36F, plus the connection/warp/sign/
-# sprite data after them) verbatim instead of reloading it from ROM.
-# SaveFile::new_empty leaves that whole block zeroed, so the game runs the
-# map script through wCurMapScriptPtr = $0000 and the audio engine through
-# music ROM bank 0, and takes a wild jump into the rst $38 crash loop about
-# one second after entering the overworld. Verified against a genuine
-# in-game save (same map, byte-bisected): giving the block real values makes
-# the very same fixture run indefinitely.
-NEW_EMPTY_MAP_BLOCK_BUG = (
-    "SaveFile::new_empty leaves the cached map-header block "
-    "(wMapMusic*, wCurMap{Height,Width}, wCurMap{Data,Text,Script}Ptr, "
-    "view pointer, connections) zeroed; the engine trusts it on CONTINUE "
-    "and crashes (rst $38) ~1s after reaching the overworld"
-)
-
 
 @pytest.mark.parametrize("entry", MANIFEST["fixtures"], ids=lambda e: e["file"])
 def test_boot_fixture(entry, rom, sym, tmp_path, artifacts_dir):
@@ -55,10 +35,9 @@ def test_boot_fixture(entry, rom, sym, tmp_path, artifacts_dir):
             game.screenshot(artifacts_dir / f"{name}.boot-timeout.png")
             raise
 
-        # Read WRAM immediately: LoadSAV already ran (CONTINUE), and no
-        # frame has ticked since the EnterMap hook fired, so these reads
-        # deterministically precede the known post-load crash (see
-        # NEW_EMPTY_MAP_BLOCK_BUG).
+        # Read WRAM right at the EnterMap hook: LoadSAV already ran
+        # (CONTINUE), and no further frame has ticked, so the values are
+        # exactly what the engine loaded from the save.
         problems = friendly_mismatches(game, entry["expected"])
         problems += wram_mismatches(game, entry["expected_wram"])
         if problems:
@@ -72,12 +51,13 @@ def test_boot_fixture(entry, rom, sym, tmp_path, artifacts_dir):
 
 
 @pytest.mark.parametrize("entry", MANIFEST["fixtures"], ids=lambda e: e["file"])
-@pytest.mark.xfail(reason=NEW_EMPTY_MAP_BLOCK_BUG, strict=False)
 def test_overworld_survives_after_continue(entry, rom, sym, tmp_path, artifacts_dir):
-    """The overworld should keep running after CONTINUE (LCD on, play-time
-    clock ticking). Currently expected to fail for every fixture — see
-    NEW_EMPTY_MAP_BLOCK_BUG. Flips to passing once new_empty writes a
-    coherent cached map-header block.
+    """The overworld keeps running after CONTINUE (LCD on, play-time clock
+    ticking). This guards the cached map-header/engine-state block that
+    new_empty bakes in (gen1/engine_state.rs): the engine trusts that block
+    from the save on CONTINUE (LoadSAV sets BIT_NO_PREVIOUS_MAP, so
+    LoadMapHeader never reloads it from ROM), and a zeroed block used to
+    crash the game (rst $38 wild jump) about one second in.
     """
     name = entry["file"]
     rom_copy = tmp_path / "pokered.gbc"

@@ -18,7 +18,7 @@ use core::ops::Range;
 
 use thiserror::Error;
 
-use super::{checksum, offsets, text, validate};
+use super::{checksum, engine_state, offsets, text, validate};
 use crate::{Diagnostic, SaveGame};
 
 /// Which Gen 1 cartridge a save targets. The layout is identical
@@ -60,6 +60,13 @@ impl SaveFile {
     /// - party count 0 with `0xFF` species sentinel; likewise all 12 bank
     ///   boxes and the current-box working copy,
     /// - Pokédex clear, money/coins zero (valid BCD), daycare empty,
+    /// - the player standing at the NEW GAME spawn (bedroom,
+    ///   `REDS_HOUSE_2F`) with the cached map-header/engine-state block a
+    ///   genuine fresh save carries (see [`super::engine_state`]): on
+    ///   CONTINUE the game trusts that block instead of rebuilding it from
+    ///   ROM (`LoadSAV` sets `BIT_NO_PREVIOUS_MAP`, so `LoadMapHeader`
+    ///   returns early), and a zeroed block crashes the overworld within
+    ///   about a second,
     /// - all 15 checksums valid.
     ///
     /// For [`GameVariant::Yellow`] the Pikachu friendship byte is set to
@@ -100,6 +107,10 @@ impl SaveFile {
         }
         raw[offsets::CURRENT_BOX] = 0;
         raw[offsets::CURRENT_BOX + 1] = 0xFF;
+
+        // The overworld engine state for the NEW GAME spawn; without it a
+        // continued game crashes (see the engine_state module docs).
+        engine_state::write_spawn_state(&mut raw);
 
         if variant == GameVariant::Yellow {
             raw[offsets::PIKACHU_FRIENDSHIP] = 90;

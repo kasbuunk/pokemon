@@ -11,6 +11,7 @@ pub mod checksum;
 pub mod data;
 pub mod daycare;
 pub mod detect;
+mod engine_state;
 pub mod events;
 pub mod flags;
 pub mod hof;

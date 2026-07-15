@@ -12,7 +12,7 @@ Warning W-BOX-INIT @ 0x284C..0x284D : boxes-initialized flag (bit 7 of wCurrentB
 Warning W-SPECIES-INVALID @ 0x2D0B..0x2D0C : daycare is in use but its mon species 0x1F is not a valid Pokémon
 Warning W-SPECIES-INVALID @ 0x2F34..0x2F35 : party slot 0 species 0x1F is not a valid Pokémon
 Warning W-LEVEL-RANGE @ 0x2F55..0x2F56 : party slot 0 level 120 is above the legitimate maximum 100
-Warning W-CHECKSUM-MAIN @ 0x3523..0x3524 : main data checksum mismatch: stored 0xEC, computed 0xA0
+Warning W-CHECKSUM-MAIN @ 0x3523..0x3524 : main data checksum mismatch: stored 0x65, computed 0x4D
 Warning W-BOX-STALE @ 0x4000..0x4462 : bank copy of current box 1 differs from the working copy at 0x30C0; the working copy is authoritative (common in real saves — the game only flushes on box switch); sync_current_box_to_bank() reconciles them
 Warning W-CHECKSUM-BOXBANK2 @ 0x5A4C..0x5A4D : bank 2 all-boxes checksum mismatch: stored 0x05, computed 0xC1
 Warning W-CHECKSUM-BOX1 @ 0x5A4D..0x5A4E : box 1 checksum mismatch: stored 0x00, computed 0xBC

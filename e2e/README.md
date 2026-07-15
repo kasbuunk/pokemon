@@ -40,13 +40,16 @@ Failure screenshots land in `e2e/artifacts/`.
   by the Rust generator — so the Python side needs no Gen 1 charset/BCD
   code. Labels are resolved through the pokered symbol file at runtime.
 
-## Known core-crate bug (xfail)
+## Overworld survival
 
-`test_overworld_survives_after_continue` is expected to fail: on CONTINUE
-the engine trusts the save's cached map-header block (music id/bank, map
-view pointer, map dimensions, map data/text/script pointers, connections)
-because `LoadSAV` sets `BIT_NO_PREVIOUS_MAP` and `LoadMapHeader` then
-early-returns. `SaveFile::new_empty` leaves that block zeroed, so the game
-crashes (wild jump into the `rst $38` loop) about one second after
-reaching the overworld. The acceptance tests read WRAM at the `EnterMap`
-hook, before any further frame runs, so they are unaffected.
+`test_overworld_survives_after_continue` runs each fixture 600+ frames past
+`EnterMap` and requires the LCD to stay on and the play-time clock to keep
+ticking. This guards a subtle engine contract: on CONTINUE the game trusts
+the save's cached map-header block (music id/bank, map view pointer, map
+dimensions, map data/text/script pointers, connections, warps, signs,
+sprite objects, tileset pointers — WRAM `$D35B..$D53A`) because `LoadSAV`
+sets `BIT_NO_PREVIOUS_MAP` and `LoadMapHeader` then early-returns instead
+of reloading it from ROM. A zeroed block boots but crashes (`rst $38` wild
+jump) about one second in. `SaveFile::new_empty` now bakes in the genuine
+NEW GAME spawn block (`crates/pksave/src/gen1/engine_state.rs`), captured
+from a scripted fresh game in this very harness.

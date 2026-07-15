@@ -219,6 +219,7 @@ fn warp_to_derives_block_coords_as_the_game_does() {
 fn warp_to_touches_only_map_and_coord_bytes() {
     let mut save = SaveFile::new_empty(GameVariant::RedBlue);
     let before = save.as_bytes().to_vec();
+    let pointer_before = save.map_view_pointer();
     save.warp_to(0x05, 13, 9);
     // wCurMap (0x260A) and wYCoord..wXBlockCoord (0x260D..0x2611) — the
     // view pointer between them (0x260B-0x260C) must not move.
@@ -232,5 +233,9 @@ fn warp_to_touches_only_map_and_coord_bytes() {
             r.end
         );
     }
-    assert_eq!(save.map_view_pointer(), 0, "pointer left untouched");
+    assert_eq!(
+        save.map_view_pointer(),
+        pointer_before,
+        "pointer left untouched"
+    );
 }
