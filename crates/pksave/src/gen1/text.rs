@@ -147,7 +147,12 @@ pub enum TextError {
     #[error(
         "encoded text needs {needed} bytes (terminator included) but the field is {field_len}"
     )]
-    TooLong { needed: usize, field_len: usize },
+    TooLong {
+        /// Bytes the encoded text needs, terminator included.
+        needed: usize,
+        /// Size of the destination field in bytes.
+        field_len: usize,
+    },
 }
 
 /// Decode a Gen 1 text field. Stops at the `0x50` terminator; bytes with
@@ -270,14 +275,14 @@ mod tests {
         assert!(encode("ABCDEFGHIJ", 11).is_ok());
         // ...but 11 chars do not.
         assert_eq!(
-            encode("ABCDEFGHIJK", 11).unwrap_err(),
+            encode("ABCDEFGHIJK", 11).expect_err("too long"),
             TextError::TooLong {
                 needed: 12,
                 field_len: 11
             }
         );
         assert_eq!(
-            encode("", 0).unwrap_err(),
+            encode("", 0).expect_err("too long"),
             TextError::TooLong {
                 needed: 1,
                 field_len: 0
@@ -287,10 +292,16 @@ mod tests {
 
     #[test]
     fn unencodable_chars_are_rejected() {
-        assert_eq!(encode("~", 11).unwrap_err(), TextError::Unencodable('~'));
-        assert_eq!(encode("A@B", 11).unwrap_err(), TextError::Unencodable('@'));
         assert_eq!(
-            encode("\u{FFFD}", 11).unwrap_err(),
+            encode("~", 11).expect_err("unencodable"),
+            TextError::Unencodable('~')
+        );
+        assert_eq!(
+            encode("A@B", 11).expect_err("unencodable"),
+            TextError::Unencodable('@')
+        );
+        assert_eq!(
+            encode("\u{FFFD}", 11).expect_err("unencodable"),
             TextError::Unencodable('\u{FFFD}')
         );
     }

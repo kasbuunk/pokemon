@@ -14,23 +14,31 @@
 //! the repository for the format reference.
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 pub mod gen1;
 
 /// Severity of a [`Diagnostic`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
+    /// Informational note; the file is fine (e.g. a detected game variant).
     Info,
+    /// Something is off (e.g. a stale bank copy or bad checksum) but the
+    /// file remains fully editable.
     Warning,
+    /// Structurally wrong data that the editor tolerates but the game may
+    /// not; still never blocks editing.
     Error,
 }
 
 /// A non-fatal finding about a save file. Diagnostics never block editing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
+    /// How serious the finding is.
     pub severity: Severity,
     /// Stable machine-readable code, e.g. `W-CHECKSUM-MAIN`.
     pub code: &'static str,
+    /// Human-readable description of the finding.
     pub message: String,
     /// Byte range in the file this concerns, if applicable.
     pub span: Option<core::ops::Range<usize>>,

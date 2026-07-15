@@ -1,0 +1,5 @@
+# `clippy::unwrap_used` is denied workspace-wide (see [workspace.lints] in
+# Cargo.toml) to keep production code panic-free on recoverable errors.
+# Test code (integration tests and #[cfg(test)] modules) may still unwrap;
+# in-tree tests nonetheless prefer .expect("...") with a meaningful message.
+allow-unwrap-in-tests = true

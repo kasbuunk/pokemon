@@ -5,6 +5,7 @@
 //! are "". 507 bits are named; NUM_EVENTS = $A00 = 2560 bits
 //! (wEventFlags spans 320 bytes of WRAM, all copied into the save).
 
+/// `EVENT_*` names indexed by `wEventFlags` bit number (`""` for unnamed bits).
 pub static EVENT_FLAG_NAMES: [&str; 2560] = [
     "EVENT_FOLLOWED_OAK_INTO_LAB", // 0x00
     "",

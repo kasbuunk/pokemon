@@ -30,7 +30,9 @@ use crate::{Diagnostic, SaveGame};
 /// friendship byte).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GameVariant {
+    /// Pokémon Red or Blue.
     RedBlue,
+    /// Pokémon Yellow.
     Yellow,
 }
 
@@ -38,8 +40,12 @@ pub enum GameVariant {
 /// short to be a 32 KiB SRAM dump.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum LoadError {
+    /// The buffer is shorter than one 32 KiB SRAM image.
     #[error("save file is {len} bytes; a Gen 1 save is at least 0x8000 (32768) bytes")]
-    TooShort { len: usize },
+    TooShort {
+        /// Actual length of the rejected buffer.
+        len: usize,
+    },
 }
 
 /// A raw write ([`SaveFile::set_byte`] / [`SaveFile::set_bytes`]) that
@@ -91,7 +97,8 @@ impl SaveFile {
     /// - Pokédex clear, money/coins zero (valid BCD), daycare empty,
     /// - the player standing at the NEW GAME spawn (bedroom,
     ///   `REDS_HOUSE_2F`) with the cached map-header/engine-state block a
-    ///   genuine fresh save carries (see [`super::engine_state`]): on
+    ///   genuine fresh save carries (see the private `engine_state`
+    ///   module): on
     ///   CONTINUE the game trusts that block instead of rebuilding it from
     ///   ROM (`LoadSAV` sets `BIT_NO_PREVIOUS_MAP`, so `LoadMapHeader`
     ///   returns early), and a zeroed block crashes the overworld within
@@ -390,11 +397,11 @@ mod tests {
     #[test]
     fn rejects_too_short() {
         assert_eq!(
-            SaveFile::from_bytes(Vec::new()).unwrap_err(),
+            SaveFile::from_bytes(Vec::new()).expect_err("too short"),
             LoadError::TooShort { len: 0 }
         );
         assert_eq!(
-            SaveFile::from_bytes(vec![0u8; 0x7FFF]).unwrap_err(),
+            SaveFile::from_bytes(vec![0u8; 0x7FFF]).expect_err("too short"),
             LoadError::TooShort { len: 0x7FFF }
         );
     }

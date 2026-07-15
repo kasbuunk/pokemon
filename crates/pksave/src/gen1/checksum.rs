@@ -98,6 +98,7 @@ impl Region {
 /// A stored checksum that does not match the bytes it covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChecksumMismatch {
+    /// The checksummed region that failed verification.
     pub region: Region,
     /// Checksum byte currently stored in the file.
     pub stored: u8,

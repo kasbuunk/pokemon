@@ -4,6 +4,7 @@
 //! Type ids are sparse: $00-$08 are the physical types, $14-$1A the
 //! special types, and $09-$13 are unused ("").
 
+/// Type names indexed by Gen 1 type id (`""` for the unused gap).
 pub const TYPE_NAMES: [&str; 27] = [
     "NORMAL",   // 0x00
     "FIGHTING", // 0x01

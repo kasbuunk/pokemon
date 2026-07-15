@@ -48,6 +48,7 @@ impl SaveFile {
         self.buf()[offsets::X_COORD]
     }
 
+    /// Set the player X coordinate **only** (see [`SaveFile::warp_to`]).
     pub fn set_x_coord(&mut self, x: u8) {
         self.buf_mut()[offsets::X_COORD] = x;
     }
@@ -57,6 +58,7 @@ impl SaveFile {
         self.buf()[offsets::Y_COORD]
     }
 
+    /// Set the player Y coordinate **only** (see [`SaveFile::warp_to`]).
     pub fn set_y_coord(&mut self, y: u8) {
         self.buf_mut()[offsets::Y_COORD] = y;
     }
@@ -67,6 +69,7 @@ impl SaveFile {
         self.buf()[offsets::X_BLOCK_COORD]
     }
 
+    /// Set the X block coordinate (0 or 1).
     pub fn set_x_block_coord(&mut self, v: u8) {
         self.buf_mut()[offsets::X_BLOCK_COORD] = v;
     }
@@ -76,6 +79,7 @@ impl SaveFile {
         self.buf()[offsets::Y_BLOCK_COORD]
     }
 
+    /// Set the Y block coordinate (0 or 1).
     pub fn set_y_block_coord(&mut self, v: u8) {
         self.buf_mut()[offsets::Y_BLOCK_COORD] = v;
     }
@@ -86,6 +90,7 @@ impl SaveFile {
         self.buf()[offsets::LAST_MAP]
     }
 
+    /// Set the last outdoor map id.
     pub fn set_last_map(&mut self, map_id: u8) {
         self.buf_mut()[offsets::LAST_MAP] = map_id;
     }
@@ -95,6 +100,7 @@ impl SaveFile {
         self.buf()[offsets::CUR_MAP_TILESET]
     }
 
+    /// Set the current tileset id **only** (see [`SaveFile::warp_to`]).
     pub fn set_tileset(&mut self, tileset: u8) {
         self.buf_mut()[offsets::CUR_MAP_TILESET] = tileset;
     }

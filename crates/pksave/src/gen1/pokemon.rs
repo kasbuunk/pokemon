@@ -47,9 +47,13 @@ mod off {
 /// Status-condition bit positions in the status byte (`+0x04`).
 /// Bits 0-2 hold the sleep-turn counter.
 pub const STATUS_SLEEP_MASK: u8 = 0b0000_0111;
+/// Status byte bit 3: poisoned (`PSN` in pokered).
 pub const STATUS_POISONED: u8 = 1 << 3;
+/// Status byte bit 4: burned (`BRN`).
 pub const STATUS_BURNED: u8 = 1 << 4;
+/// Status byte bit 5: frozen (`FRZ`).
 pub const STATUS_FROZEN: u8 = 1 << 5;
+/// Status byte bit 6: paralyzed (`PAR`).
 pub const STATUS_PARALYZED: u8 = 1 << 6;
 
 fn get_u16(bytes: &[u8], at: usize) -> u16 {
@@ -424,22 +428,27 @@ impl<'a> PartyMonMut<'a> {
         self.0[off::LEVEL] = level;
     }
 
+    /// Set the calculated max HP stat (`+0x22`).
     pub fn set_max_hp(&mut self, value: u16) {
         set_u16(self.0, off::MAX_HP, value);
     }
 
+    /// Set the calculated Attack stat (`+0x24`).
     pub fn set_attack(&mut self, value: u16) {
         set_u16(self.0, off::ATTACK, value);
     }
 
+    /// Set the calculated Defense stat (`+0x26`).
     pub fn set_defense(&mut self, value: u16) {
         set_u16(self.0, off::DEFENSE, value);
     }
 
+    /// Set the calculated Speed stat (`+0x28`).
     pub fn set_speed(&mut self, value: u16) {
         set_u16(self.0, off::SPEED, value);
     }
 
+    /// Set the calculated Special stat (`+0x2A`).
     pub fn set_special(&mut self, value: u16) {
         set_u16(self.0, off::SPECIAL, value);
     }

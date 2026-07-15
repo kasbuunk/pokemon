@@ -124,6 +124,7 @@ impl<'a> HofTeamView<'a> {
             .count()
     }
 
+    /// Whether the team has no occupied slots.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -145,6 +146,7 @@ impl HofTeamMut<'_> {
         self.as_view().len()
     }
 
+    /// Whether the team has no occupied slots.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

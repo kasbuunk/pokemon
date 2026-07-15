@@ -50,8 +50,10 @@ const fn nickname_at(i: usize) -> usize {
 /// A party edit that cannot be applied.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum PartyError {
+    /// The party already holds [`offsets::PARTY_CAPACITY`] (6) mons.
     #[error("party is full ({capacity} mons)", capacity = offsets::PARTY_CAPACITY)]
     Full,
+    /// A nickname or OT name failed to encode.
     #[error(transparent)]
     Text(#[from] TextError),
 }
@@ -91,6 +93,7 @@ impl<'a> PartyView<'a> {
         usize::from(self.data[COUNT]).min(offsets::PARTY_CAPACITY)
     }
 
+    /// Whether the party holds no mons.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -133,6 +136,7 @@ impl<'a> PartyMut<'a> {
         self.as_view().len()
     }
 
+    /// Whether the party holds no mons.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
