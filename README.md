@@ -60,6 +60,34 @@ cargo test --workspace
 
 Pushes to `main` deploy the web app to GitHub Pages automatically.
 
+### OnionOS/Miyoo SD-card discovery (native only)
+
+The desktop app watches for removable volumes (macOS `/Volumes`,
+elsewhere via `sysinfo`). When an OnionOS/Miyoo Mini SD card appears —
+recognized by its root markers (`.tmp_update/`, `Saves/CurrentProfile/`,
+`miyoo/`, …), never by volume name — it scans every profile's
+`Saves/<profile>/saves/Gambatte/*.srm` (plus the legacy
+`RetroArch/.retroarch/saves/` path), previews the Gen 1 saves it finds
+and offers them in an "SD card saves" panel. Opening and saving use the
+regular flows (timestamped `.bak` beside the file, fsync before the
+"safe to eject" note). If a save state shadows the battery save (OnionOS
+auto-loads states), the app warns and offers to rename it out of the way.
+
+On macOS 13+, reading a removable volume triggers a one-time
+"Files and Folders → Removable Volumes" consent prompt. For a stable
+prompt (remembered across runs), ship the app as a bundle: install
+[cargo-bundle](https://github.com/burtonageo/cargo-bundle), then
+
+```sh
+cd crates/pksave-app && cargo bundle --release
+codesign --force --deep -s - target/release/bundle/osx/pksave.app  # ad-hoc
+```
+
+The bundle metadata in `crates/pksave-app/Cargo.toml` injects
+`NSRemovableVolumesUsageDescription` (from `assets/InfoPlist.ext.plist`)
+into the generated `Info.plist`. A bare `cargo run` binary still works —
+macOS then attributes the TCC grant per invocation, which can re-prompt.
+
 ### End-to-end verification (optional, used by CI)
 
 Requires RGBDS 1.0.1 and Python 3.11+:

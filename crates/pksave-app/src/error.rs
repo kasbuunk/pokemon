@@ -29,6 +29,13 @@ pub enum AppError {
         path: PathBuf,
         source: std::io::Error,
     },
+    /// Renaming a shadowing save state on the SD card failed.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("could not rename save state {}: {source}", path.display())]
+    RenameState {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     /// The browser download could not be triggered.
     #[error("could not save in the browser: {0}")]
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
