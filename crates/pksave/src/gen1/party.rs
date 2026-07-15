@@ -13,7 +13,7 @@
 use thiserror::Error;
 
 use super::offsets;
-use super::pokemon::{PartyMonMut, PartyMonView};
+use super::pokemon::{MonMut, MonView, PartyMonMut, PartyMonView};
 use super::save::SaveFile;
 use super::text::{self, TextError};
 

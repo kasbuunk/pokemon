@@ -22,7 +22,7 @@ use std::path::Path;
 
 use pksave::gen1::data::{BASE_STATS, DEX_TO_INDEX, MOVES, SPECIES_NAMES};
 use pksave::gen1::offsets;
-use pksave::gen1::pokemon::PartyMonMut;
+use pksave::gen1::pokemon::{MonMut, MonView, PartyMon, PartyMonMut};
 use pksave::gen1::save::{GameVariant, SaveFile};
 use pksave::gen1::stats::Dvs;
 use pksave::gen1::trainer::Badge;

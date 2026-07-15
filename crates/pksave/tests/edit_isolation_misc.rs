@@ -13,7 +13,7 @@ use core::ops::Range;
 use pksave::gen1::checksum::Region;
 use pksave::gen1::data::DEX_TO_INDEX;
 use pksave::gen1::offsets;
-use pksave::gen1::pokemon::{BoxMonMut, PartyMonMut};
+use pksave::gen1::pokemon::{BoxMonMut, MonMut, PartyMonMut};
 use pksave::gen1::save::{changed_ranges, GameVariant, SaveFile};
 
 fn make_box_mon(dex: usize, level: u8) -> [u8; offsets::BOX_MON_SIZE] {

@@ -3,7 +3,7 @@
 use pksave::gen1::data::DEX_TO_INDEX;
 use pksave::gen1::offsets;
 use pksave::gen1::party::PartyError;
-use pksave::gen1::pokemon::PartyMonMut;
+use pksave::gen1::pokemon::{MonMut, MonView, PartyMon, PartyMonMut};
 use pksave::gen1::save::SaveFile;
 
 const PARTY_END: usize = offsets::PARTY + offsets::PARTY_LEN;

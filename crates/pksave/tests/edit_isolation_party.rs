@@ -5,7 +5,7 @@
 use pksave::gen1::data::DEX_TO_INDEX;
 use pksave::gen1::offsets;
 use pksave::gen1::party::PartyError;
-use pksave::gen1::pokemon::PartyMonMut;
+use pksave::gen1::pokemon::{MonMut, MonView, PartyMonMut};
 use pksave::gen1::save::SaveFile;
 use pksave::gen1::text;
 use proptest::collection::vec;

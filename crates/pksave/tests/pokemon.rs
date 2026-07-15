@@ -4,7 +4,8 @@
 use pksave::gen1::data::{BASE_STATS, DEX_TO_INDEX};
 use pksave::gen1::offsets::{BOX_MON_SIZE, PARTY_MON_SIZE};
 use pksave::gen1::pokemon::{
-    box_to_party, party_to_box, BoxMonMut, BoxMonView, PartyMonMut, PartyMonView,
+    box_to_party, party_to_box, BoxMonMut, BoxMonView, MonMut, MonView, PartyMon, PartyMonMut,
+    PartyMonView,
 };
 use pksave::gen1::stats::{
     calc_stat, compose_pp, current_pp, exp_for_level, level_for_exp, pp_ups, Dvs,
@@ -438,6 +439,151 @@ fn box_to_party_recomputes_stats_for_the_stored_level() {
     assert_eq!(view.defense(), calc_stat(base.defense, 7, 3000, 42, false));
     assert_eq!(view.speed(), calc_stat(base.speed, 7, 4000, 42, false));
     assert_eq!(view.special(), calc_stat(base.special, 7, 5000, 42, false));
+}
+
+// ---- traits: party/box parity over the shared 33 bytes ----
+
+/// Every [`MonView`] getter except `as_bytes`, bundled for equality
+/// comparison between views (`as_bytes` is compared as a prefix by the
+/// caller since the record lengths differ).
+#[derive(Debug, PartialEq)]
+struct CommonFields {
+    species: u8,
+    current_hp: u16,
+    box_level: u8,
+    status: u8,
+    sleep_turns: u8,
+    is_poisoned: bool,
+    is_burned: bool,
+    is_frozen: bool,
+    is_paralyzed: bool,
+    types: (u8, u8),
+    catch_rate: u8,
+    moves: [u8; 4],
+    ot_id: u16,
+    exp: u32,
+    stat_exps: [u16; 5],
+    dvs: Dvs,
+    pp: [u8; 4],
+}
+
+fn common_fields(mon: &dyn MonView) -> CommonFields {
+    CommonFields {
+        species: mon.species(),
+        current_hp: mon.current_hp(),
+        box_level: mon.box_level(),
+        status: mon.status(),
+        sleep_turns: mon.sleep_turns(),
+        is_poisoned: mon.is_poisoned(),
+        is_burned: mon.is_burned(),
+        is_frozen: mon.is_frozen(),
+        is_paralyzed: mon.is_paralyzed(),
+        types: mon.types(),
+        catch_rate: mon.catch_rate(),
+        moves: mon.moves(),
+        ot_id: mon.ot_id(),
+        exp: mon.exp(),
+        stat_exps: mon.stat_exps(),
+        dvs: mon.dvs(),
+        pp: mon.pp(),
+    }
+}
+
+/// One arbitrary value per [`MonMut`] setter.
+#[derive(Debug)]
+struct CommonEdit {
+    species: u8,
+    current_hp: u16,
+    box_level: u8,
+    status: u8,
+    types: (u8, u8),
+    catch_rate: u8,
+    moves: [u8; 4],
+    ot_id: u16,
+    exp: u32,
+    stat_exps: [u16; 5],
+    dvs: [u8; 2],
+    pp: [u8; 4],
+}
+
+prop_compose! {
+    fn arb_common_edit()(
+        (species, current_hp, box_level, status, types, catch_rate) in any::<(u8, u16, u8, u8, (u8, u8), u8)>(),
+        (moves, ot_id, exp, stat_exps, dvs, pp) in any::<([u8; 4], u16, u32, [u16; 5], [u8; 2], [u8; 4])>(),
+    ) -> CommonEdit {
+        CommonEdit {
+            species, current_hp, box_level, status, types, catch_rate,
+            moves, ot_id, exp, stat_exps, dvs, pp,
+        }
+    }
+}
+
+/// Drive every [`MonMut`] setter once.
+fn apply_common_edit(mon: &mut dyn MonMut, e: &CommonEdit) {
+    mon.set_species(e.species);
+    mon.set_current_hp(e.current_hp);
+    mon.set_box_level(e.box_level);
+    mon.set_status(e.status);
+    mon.set_types(e.types.0, e.types.1);
+    mon.set_catch_rate(e.catch_rate);
+    mon.set_moves(e.moves);
+    mon.set_ot_id(e.ot_id);
+    mon.set_exp(e.exp);
+    mon.set_stat_exps(e.stat_exps);
+    mon.set_dvs(Dvs::unpack(e.dvs));
+    mon.set_pp(e.pp);
+}
+
+proptest! {
+    #[test]
+    fn mon_view_getters_agree_between_party_and_box(record in any::<[u8; PARTY_MON_SIZE]>()) {
+        let party = PartyMonView::new(&record);
+        let boxed = BoxMonView::new(&record[..BOX_MON_SIZE]);
+        prop_assert_eq!(&party.as_bytes()[..BOX_MON_SIZE], boxed.as_bytes());
+        prop_assert_eq!(common_fields(&party), common_fields(&boxed));
+    }
+
+    #[test]
+    fn mon_mut_setters_agree_between_party_and_box(
+        record in any::<[u8; PARTY_MON_SIZE]>(),
+        edit in arb_common_edit(),
+    ) {
+        let mut party_bytes = record;
+        let mut box_bytes = [0u8; BOX_MON_SIZE];
+        box_bytes.copy_from_slice(&record[..BOX_MON_SIZE]);
+        apply_common_edit(&mut PartyMonMut::new(&mut party_bytes), &edit);
+        apply_common_edit(&mut BoxMonMut::new(&mut box_bytes), &edit);
+        prop_assert_eq!(&party_bytes[..BOX_MON_SIZE], &box_bytes[..]);
+        // The setters are common-field setters: the party-only tail is
+        // untouched.
+        prop_assert_eq!(&party_bytes[BOX_MON_SIZE..], &record[BOX_MON_SIZE..]);
+    }
+}
+
+// ---- traits: dyn compatibility ----
+
+#[test]
+fn mon_traits_are_dyn_compatible() {
+    fn read_species(mon: &dyn MonView) -> u8 {
+        mon.species()
+    }
+    fn write_hp(mon: &mut dyn MonMut) {
+        mon.set_current_hp(123);
+    }
+
+    let party = patterned_party_mon();
+    let mut boxed = [0u8; BOX_MON_SIZE];
+    boxed.copy_from_slice(&party[..BOX_MON_SIZE]);
+    assert_eq!(read_species(&PartyMonView::new(&party)), 0x99);
+    assert_eq!(read_species(&BoxMonView::new(&boxed)), 0x99);
+
+    let mut party_bytes = party;
+    let mut party_mon = PartyMonMut::new(&mut party_bytes);
+    write_hp(&mut party_mon);
+    assert_eq!(party_mon.current_hp(), 123);
+    let mut box_mon = BoxMonMut::new(&mut boxed);
+    write_hp(&mut box_mon);
+    assert_eq!(box_mon.current_hp(), 123);
 }
 
 // ---- proptest: conversions preserve everything derivable ----

@@ -4,7 +4,8 @@
 
 use pksave::gen1::data::{BASE_STATS, INDEX_TO_DEX, MOVES, SPECIES_NAMES};
 use pksave::gen1::pokemon::{
-    PartyMonMut, STATUS_BURNED, STATUS_FROZEN, STATUS_PARALYZED, STATUS_POISONED, STATUS_SLEEP_MASK,
+    MonMut, MonView, PartyMon, PartyMonMut, STATUS_BURNED, STATUS_FROZEN, STATUS_PARALYZED,
+    STATUS_POISONED, STATUS_SLEEP_MASK,
 };
 use pksave::gen1::stats::{self, Dvs};
 use pksave::gen1::{offsets, text};

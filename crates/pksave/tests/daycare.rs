@@ -2,7 +2,7 @@
 
 use pksave::gen1::data::DEX_TO_INDEX;
 use pksave::gen1::offsets;
-use pksave::gen1::pokemon::BoxMonMut;
+use pksave::gen1::pokemon::{BoxMonMut, MonMut, MonView};
 use pksave::gen1::save::{changed_ranges, GameVariant, SaveFile};
 use pksave::gen1::text::TextError;
 

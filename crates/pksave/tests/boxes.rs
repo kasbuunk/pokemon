@@ -4,7 +4,7 @@
 use pksave::gen1::boxes::{BoxError, TransferError};
 use pksave::gen1::data::DEX_TO_INDEX;
 use pksave::gen1::offsets;
-use pksave::gen1::pokemon::{BoxMonMut, PartyMonMut};
+use pksave::gen1::pokemon::{BoxMonMut, MonMut, MonView, PartyMon, PartyMonMut};
 use pksave::gen1::save::{changed_ranges, GameVariant, SaveFile};
 use pksave::gen1::stats::Dvs;
 

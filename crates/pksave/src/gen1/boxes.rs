@@ -23,7 +23,7 @@
 use thiserror::Error;
 
 use super::offsets;
-use super::pokemon::{box_to_party, party_to_box, BoxMonMut, BoxMonView};
+use super::pokemon::{box_to_party, party_to_box, BoxMonMut, BoxMonView, MonMut, MonView};
 use super::save::SaveFile;
 use super::text::{self, TextError};
 

@@ -10,7 +10,7 @@ use pksave::gen1::checksum;
 use pksave::gen1::data::{DEX_TO_INDEX, INDEX_TO_DEX, MAP_NAMES};
 use pksave::gen1::detect::detect_variant;
 use pksave::gen1::offsets;
-use pksave::gen1::pokemon::PartyMonMut;
+use pksave::gen1::pokemon::{MonMut, PartyMonMut};
 use pksave::gen1::save::{GameVariant, SaveFile};
 use pksave::{Diagnostic, Severity};
 

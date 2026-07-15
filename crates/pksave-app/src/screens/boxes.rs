@@ -3,6 +3,7 @@
 
 use pksave::gen1::data::{BASE_STATS, INDEX_TO_DEX};
 use pksave::gen1::offsets;
+use pksave::gen1::pokemon::{MonMut, MonView, PartyMon};
 
 use crate::app::Doc;
 use crate::screens::party::{apply_edits, common_editor, snapshot, MonSnapshot};
