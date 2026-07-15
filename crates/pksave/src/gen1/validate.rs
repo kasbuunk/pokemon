@@ -40,6 +40,7 @@ pub fn diagnose(save: &SaveFile) -> Vec<Diagnostic> {
 
     file_size(buf, &mut diags);
     checksums(buf, &mut diags);
+    pinned_checksums(save, &mut diags);
     party(buf, &mut diags);
     boxes(buf, &mut diags);
     diags.extend(diagnose_item_list(buf, &BAG_LIST));
@@ -70,6 +71,17 @@ fn file_size(buf: &[u8], diags: &mut Vec<Diagnostic>) {
     }
 }
 
+/// Human-readable label for a checksummed region, shared by the
+/// `W-CHECKSUM-*` and `I-CHECKSUM-PINNED` messages.
+fn region_label(region: checksum::Region) -> String {
+    match region {
+        checksum::Region::Main => "main data".to_string(),
+        checksum::Region::Bank2AllBoxes => "bank 2 all-boxes".to_string(),
+        checksum::Region::Bank3AllBoxes => "bank 3 all-boxes".to_string(),
+        checksum::Region::Box(n) => format!("box {}", n + 1),
+    }
+}
+
 /// `W-CHECKSUM-*`: one warning per stored checksum that disagrees with
 /// the bytes it covers.
 fn checksums(buf: &[u8], diags: &mut Vec<Diagnostic>) {
@@ -88,25 +100,45 @@ fn checksums(buf: &[u8], diags: &mut Vec<Diagnostic>) {
         "W-CHECKSUM-BOX12",
     ];
     for m in checksum::verify(buf) {
-        let (code, what) = match m.region {
-            checksum::Region::Main => ("W-CHECKSUM-MAIN", "main data".to_string()),
-            checksum::Region::Bank2AllBoxes => {
-                ("W-CHECKSUM-BOXBANK2", "bank 2 all-boxes".to_string())
-            }
-            checksum::Region::Bank3AllBoxes => {
-                ("W-CHECKSUM-BOXBANK3", "bank 3 all-boxes".to_string())
-            }
-            checksum::Region::Box(n) => (BOX_CODES[n], format!("box {}", n + 1)),
+        let code = match m.region {
+            checksum::Region::Main => "W-CHECKSUM-MAIN",
+            checksum::Region::Bank2AllBoxes => "W-CHECKSUM-BOXBANK2",
+            checksum::Region::Bank3AllBoxes => "W-CHECKSUM-BOXBANK3",
+            checksum::Region::Box(n) => BOX_CODES[n],
         };
         let at = m.region.checksum_offset();
         diags.push(warn(
             code,
             format!(
-                "{what} checksum mismatch: stored 0x{:02X}, computed 0x{:02X}",
-                m.stored, m.computed
+                "{} checksum mismatch: stored 0x{:02X}, computed 0x{:02X}",
+                region_label(m.region),
+                m.stored,
+                m.computed
             ),
             at..at + 1,
         ));
+    }
+}
+
+/// `I-CHECKSUM-PINNED`: informational note per region whose stored
+/// checksum byte is pinned by an override
+/// ([`SaveFile::set_checksum_override`] or a raw `set_byte` on the
+/// checksum byte) and therefore kept verbatim by `to_bytes()`.
+fn pinned_checksums(save: &SaveFile, diags: &mut Vec<Diagnostic>) {
+    for region in checksum::Region::ALL {
+        if save.checksum_override(region).is_some() {
+            let at = region.checksum_offset();
+            diags.push(Diagnostic {
+                severity: Severity::Info,
+                code: "I-CHECKSUM-PINNED",
+                message: format!(
+                    "{} stored checksum is pinned by an override and will not be recomputed on \
+                     save",
+                    region_label(region)
+                ),
+                span: Some(at..at + 1),
+            });
+        }
     }
 }
 

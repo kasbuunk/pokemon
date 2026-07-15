@@ -6,10 +6,12 @@
 //! `wasm32-unknown-unknown`.
 //!
 //! The anti-corruption model: the entire input buffer is held verbatim and
-//! every edit mutates only the bytes of the field being changed; checksums
-//! are recomputed only for regions that were actually modified, so an
-//! untouched file always round-trips byte-identically. See `docs/FORMAT.md`
-//! in the repository for the format reference.
+//! every edit mutates only the bytes of the field being changed. A single
+//! global *edited* flag gates serialization: an untouched file always
+//! round-trips byte-identically, while `to_bytes()` on an edited file
+//! recomputes all 15 checksums — except regions pinned via a checksum
+//! override, whose stored byte is kept verbatim. See `docs/FORMAT.md` in
+//! the repository for the format reference.
 
 #![forbid(unsafe_code)]
 
@@ -41,6 +43,7 @@ pub trait SaveGame {
     fn game_label(&self) -> &str;
     /// Current diagnostics for the buffer.
     fn diagnostics(&self) -> Vec<Diagnostic>;
-    /// Serialize back to bytes (recomputing checksums for edited regions).
+    /// Serialize back to bytes (recomputing checksums once anything was
+    /// edited, minus any pinned regions).
     fn to_bytes(&self) -> Vec<u8>;
 }

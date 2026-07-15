@@ -8,7 +8,10 @@
 //! - An *untouched* file serializes back byte-identically, even if its
 //!   stored checksums are wrong.
 //! - Once anything was edited (any mutable buffer access), [`to_bytes`]
-//!   recomputes all 15 checksums so the game accepts the file.
+//!   recomputes all 15 checksums so the game accepts the file — except
+//!   regions *pinned* by a checksum override
+//!   ([`SaveFile::set_checksum_override`] or a raw [`SaveFile::set_byte`]
+//!   on a stored checksum byte), whose stored byte is kept verbatim.
 //! - Bytes past the 32 KiB SRAM image (emulator padding, RTC footers) are
 //!   always preserved verbatim.
 //!
@@ -39,6 +42,18 @@ pub enum LoadError {
     TooShort { len: usize },
 }
 
+/// A raw write ([`SaveFile::set_byte`] / [`SaveFile::set_bytes`]) that
+/// reaches past the end of the buffer. The check is all-or-nothing: on
+/// error the buffer is untouched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("offset {offset:#06X} out of range for a {len}-byte save")]
+pub struct RawOffsetError {
+    /// First offset of the write that falls outside the buffer.
+    pub offset: usize,
+    /// Length of the buffer the write was attempted on.
+    pub len: usize,
+}
+
 /// A loaded Gen 1 save file. All input bytes are retained verbatim.
 #[derive(Debug, Clone)]
 pub struct SaveFile {
@@ -46,6 +61,20 @@ pub struct SaveFile {
     /// Set on any mutable access; gates checksum recomputation in
     /// [`SaveFile::to_bytes`].
     edited: bool,
+    /// Bitmask over [`checksum::Region::ALL`] (bit *i* = `ALL[i]`):
+    /// regions whose stored checksum byte is pinned by an override and
+    /// must not be recomputed on serialization. Preserved by `Clone`.
+    pinned: u16,
+}
+
+/// The bit in [`SaveFile::pinned`] for `region` (its position in
+/// [`checksum::Region::ALL`]).
+fn region_bit(region: checksum::Region) -> u16 {
+    let index = checksum::Region::ALL
+        .iter()
+        .position(|&r| r == region)
+        .expect("region is one of Region::ALL");
+    1 << index
 }
 
 impl SaveFile {
@@ -119,7 +148,11 @@ impl SaveFile {
         // Pokédex, money, coins, play time, daycare-in-use are all-zero
         // already, which is exactly their empty encoding.
         checksum::fix_all(&mut raw);
-        SaveFile { raw, edited: false }
+        SaveFile {
+            raw,
+            edited: false,
+            pinned: 0,
+        }
     }
 
     /// Wrap raw save bytes. Errors only if `bytes` is shorter than
@@ -132,6 +165,7 @@ impl SaveFile {
         Ok(SaveFile {
             raw: bytes,
             edited: false,
+            pinned: 0,
         })
     }
 
@@ -164,21 +198,124 @@ impl SaveFile {
         self.edited
     }
 
+    /// Write one raw byte, hex-editor style. Equivalent to
+    /// [`SaveFile::set_bytes`] with a one-byte slice; see there for the
+    /// exact semantics (checksum pinning, tail bytes, edited flag).
+    pub fn set_byte(&mut self, offset: usize, value: u8) -> Result<(), RawOffsetError> {
+        self.set_bytes(offset, &[value])
+    }
+
+    /// Write raw bytes at `offset`, hex-editor style. The range check is
+    /// all-or-nothing: if any byte of the write would land past the end
+    /// of the buffer, nothing is written and the error reports the first
+    /// out-of-range offset. Each written byte is then classified:
+    ///
+    /// - **One of the 15 stored checksum bytes** (see
+    ///   [`checksum::Region::at_checksum_offset`]): the value is stored
+    ///   and the region is *pinned*, exactly as by
+    ///   [`SaveFile::set_checksum_override`]. Pinning is an explicit act,
+    ///   so this always marks the file edited — even when the written
+    ///   value equals the stored one.
+    /// - **A data byte inside the 32 KiB SRAM image**: written; marks the
+    ///   file edited only if the value actually changes, so a no-op write
+    ///   keeps the byte-identical round-trip of an untouched file.
+    /// - **A byte past the SRAM image** (emulator padding, RTC footer):
+    ///   written verbatim without marking the file edited — the SRAM
+    ///   image is untouched, so the stored checksums stay verbatim too
+    ///   (`docs/FORMAT.md`: the tail is preserved verbatim and otherwise
+    ///   ignored).
+    ///
+    /// This is a *raw* write with no structural routing: writing into the
+    /// current box's bank slot does **not** mirror into the 0x30C0
+    /// working copy (pokered `wBoxDataStart`), nor vice versa — exactly
+    /// like a hex editor. Use the structured box setters for routed
+    /// edits.
+    ///
+    /// Pinning the main checksum (0x3523) to a value that mismatches its
+    /// data makes the game show "the file data is destroyed!" on boot —
+    /// intentional power-user behavior.
+    pub fn set_bytes(&mut self, offset: usize, values: &[u8]) -> Result<(), RawOffsetError> {
+        let len = self.raw.len();
+        if offset > len || values.len() > len - offset {
+            return Err(RawOffsetError {
+                offset: offset.max(len),
+                len,
+            });
+        }
+        for (i, &value) in values.iter().enumerate() {
+            let at = offset + i;
+            if let Some(region) = checksum::Region::at_checksum_offset(at) {
+                self.raw[at] = value;
+                self.pinned |= region_bit(region);
+                self.edited = true;
+            } else if at < offsets::SRAM_SIZE {
+                if self.raw[at] != value {
+                    self.raw[at] = value;
+                    self.edited = true;
+                }
+            } else {
+                self.raw[at] = value;
+            }
+        }
+        Ok(())
+    }
+
+    /// Pin `region`'s stored checksum byte to `value`: the byte is
+    /// written into the buffer immediately, the file is marked edited,
+    /// and [`SaveFile::to_bytes`] keeps the byte verbatim instead of
+    /// recomputing it — until [`SaveFile::clear_checksum_override`] or
+    /// [`SaveFile::fix_checksums`] unpins it. Pins survive [`Clone`] and
+    /// are reported by the `I-CHECKSUM-PINNED` diagnostic.
+    ///
+    /// A pinned main checksum that mismatches its data makes the game
+    /// show "the file data is destroyed!" on boot — intentional
+    /// power-user behavior (e.g. probing the game's corruption
+    /// handling).
+    pub fn set_checksum_override(&mut self, region: checksum::Region, value: u8) {
+        self.raw[region.checksum_offset()] = value;
+        self.pinned |= region_bit(region);
+        self.edited = true;
+    }
+
+    /// Unpin `region`: once the file is edited, [`SaveFile::to_bytes`]
+    /// recomputes this region's checksum again. The stored byte is left
+    /// as-is until then; clearing a pin does not itself mark the file
+    /// edited.
+    pub fn clear_checksum_override(&mut self, region: checksum::Region) {
+        self.pinned &= !region_bit(region);
+    }
+
+    /// The pinned checksum byte for `region`, or `None` if the region is
+    /// not pinned. Pinned values live in the buffer itself, so this reads
+    /// the stored byte.
+    pub fn checksum_override(&self, region: checksum::Region) -> Option<u8> {
+        (self.pinned & region_bit(region) != 0).then(|| self.raw[region.checksum_offset()])
+    }
+
     /// Recompute and store all 15 checksums now — the explicit opt-in for
     /// repairing a file that was already corrupt on load. Marks the file
-    /// edited.
+    /// edited and clears **all** checksum overrides: repair is the
+    /// explicit request to make every stored checksum match again.
     pub fn fix_checksums(&mut self) {
         self.edited = true;
+        self.pinned = 0;
         checksum::fix_all(&mut self.raw);
     }
 
     /// Serialize. Returns the buffer verbatim if nothing was edited;
-    /// otherwise a copy with all 15 checksums recomputed. The tail past
-    /// the SRAM image is always preserved.
+    /// otherwise a copy with the checksum of every *non-pinned* region
+    /// recomputed (pinned bytes stay exactly as stored — see
+    /// [`SaveFile::set_checksum_override`]). The tail past the SRAM image
+    /// is always preserved.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = self.raw.clone();
         if self.edited {
-            checksum::fix_all(&mut out);
+            for region in checksum::Region::ALL {
+                if self.pinned & region_bit(region) == 0 {
+                    out[region.checksum_offset()] =
+                        checksum::gen1_checksum(&out[region.data_range()]);
+                }
+            }
         }
         out
     }
