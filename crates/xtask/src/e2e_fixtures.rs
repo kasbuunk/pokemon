@@ -215,11 +215,26 @@ fn wram_expectations(save: &SaveFile, bytes: &[u8]) -> Vec<WramExpect> {
         grab("wObtainedBadges", offsets::BADGES, 0, 1),
         grab("wPlayerID", offsets::PLAYER_ID, 0, 2),
         grab("wCurMap", offsets::CUR_MAP, 0, 1),
-        grab("wPokedexOwned", offsets::POKEDEX_OWNED, 0, offsets::POKEDEX_LEN),
-        grab("wPokedexSeen", offsets::POKEDEX_SEEN, 0, offsets::POKEDEX_LEN),
+        grab(
+            "wPokedexOwned",
+            offsets::POKEDEX_OWNED,
+            0,
+            offsets::POKEDEX_LEN,
+        ),
+        grab(
+            "wPokedexSeen",
+            offsets::POKEDEX_SEEN,
+            0,
+            offsets::POKEDEX_LEN,
+        ),
         // Count byte plus the species list including its 0xFF terminator.
         grab("wPartyCount", offsets::PARTY, 0, 1),
-        grab("wPartySpecies", offsets::PARTY + 1, 0, save.party().len() + 1),
+        grab(
+            "wPartySpecies",
+            offsets::PARTY + 1,
+            0,
+            save.party().len() + 1,
+        ),
     ];
 
     // Per-mon: the full 44-byte record and its OT name / nickname. The mon

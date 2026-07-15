@@ -30,3 +30,99 @@ jobs:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
+
+  # Everything that needs a pokered checkout / ROM build: regenerate the
+  # static tables and diff, cross-check gen1::offsets against the symbol
+  # file, then boot editor-produced saves in PyBoy against the real ROM.
+  # All external inputs are pinned in crates/xtask/src/pins.rs; the
+  # (expensive) ROM build is cached by pokered SHA + RGBDS version.
+  verify-against-pokered:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Read pins
+        id: pins
+        run: |
+          set -euo pipefail
+          sha=$(sed -n 's/^pub const POKERED_SHA: &str = "\(.*\)";$/\1/p' crates/xtask/src/pins.rs)
+          rom_sha1=$(sed -n 's/^pub const POKERED_ROM_SHA1: &str = "\(.*\)";$/\1/p' crates/xtask/src/pins.rs)
+          rgbds=$(sed -n 's/^pub const RGBDS_VERSION: &str = "\(.*\)";$/\1/p' crates/xtask/src/pins.rs)
+          test -n "$sha" && test -n "$rom_sha1" && test -n "$rgbds"
+          {
+            echo "pokered_sha=$sha"
+            echo "rom_sha1=$rom_sha1"
+            echo "rgbds=$rgbds"
+          } >> "$GITHUB_OUTPUT"
+
+      # The source checkout is cheap (shallow fetch of one commit) and is
+      # always needed (gen-tables parses the .asm files), so it is not
+      # cached; only the built ROM + symbol file are.
+      - name: Checkout pret/pokered at the pinned SHA
+        run: |
+          set -euo pipefail
+          git init -q build/pokered
+          git -C build/pokered remote add origin https://github.com/pret/pokered.git
+          git -C build/pokered fetch --depth 1 origin "${{ steps.pins.outputs.pokered_sha }}"
+          git -C build/pokered checkout -q FETCH_HEAD
+
+      - name: Cache pokered ROM build
+        id: rom-cache
+        uses: actions/cache@v4
+        with:
+          path: build/rom
+          key: pokered-${{ steps.pins.outputs.pokered_sha }}-rgbds-${{ steps.pins.outputs.rgbds }}
+
+      - name: Install RGBDS and build the ROM
+        if: steps.rom-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          # Asset name verified for v1.0.1: the Linux tarball is unversioned
+          # ("rgbds-linux-x86_64.tar.xz") with the binaries at the top level.
+          curl -fsSL -o /tmp/rgbds.tar.xz \
+            "https://github.com/gbdev/rgbds/releases/download/v${{ steps.pins.outputs.rgbds }}/rgbds-linux-x86_64.tar.xz"
+          mkdir -p "$HOME/rgbds"
+          tar -xf /tmp/rgbds.tar.xz -C "$HOME/rgbds"
+          bindir=$(dirname "$(find "$HOME/rgbds" -name rgbasm -type f | head -n1)")
+          export PATH="$bindir:$PATH"
+          rgbasm --version
+          make -C build/pokered -j"$(nproc)" red
+          mkdir -p build/rom
+          cp build/pokered/pokered.gbc build/pokered/pokered.sym build/rom/
+
+      - name: Verify ROM SHA-1 against pins
+        run: echo "${{ steps.pins.outputs.rom_sha1 }}  build/rom/pokered.gbc" | sha1sum -c -
+
+      - name: Generated tables are up to date
+        run: |
+          cargo run -p xtask -- gen-tables --pokered build/pokered
+          git diff --exit-code
+
+      - name: Offsets match the symbol file
+        run: cargo run -p xtask -- gen-offsets-check --sym build/rom/pokered.sym
+
+      - name: Build e2e fixtures with the core crate
+        run: cargo run -p xtask -- make-e2e-fixtures --out e2e/fixtures
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: e2e/requirements.txt
+
+      - name: Boot fixtures in PyBoy (e2e)
+        env:
+          POKERED_ROM: ${{ github.workspace }}/build/rom/pokered.gbc
+          POKERED_SYM: ${{ github.workspace }}/build/rom/pokered.sym
+        run: |
+          pip install -r e2e/requirements.txt
+          cd e2e && python -m pytest -v
+
+      - name: Upload failure artifacts (screenshots)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts
+          path: e2e/artifacts/
+          if-no-files-found: ignore

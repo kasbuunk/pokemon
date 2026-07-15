@@ -133,3 +133,20 @@ class Gen1Game:
                 f"(a NEW GAME was started instead)"
             )
         return frame
+
+    def run_frames(self, n):
+        """Advance the emulation n frames without rendering."""
+        for _ in range(n):
+            self.pyboy.tick(1, False)
+
+    def is_alive(self, frames=240):
+        """Whether the game engine is still healthy: run `frames` frames
+        and require the LCD to stay on and the in-game play-time clock
+        (which only ticks in a working overworld loop) to advance. A game
+        that took a wild jump into the rst $38 crash loop fails both.
+        """
+        before = self.read("wPlayTimeMinutes", 0, 3)  # minutes, seconds, frames
+        self.run_frames(frames)
+        after = self.read("wPlayTimeMinutes", 0, 3)
+        lcd_on = self.pyboy.memory[0xFF40] & 0x80 != 0
+        return lcd_on and after != before
