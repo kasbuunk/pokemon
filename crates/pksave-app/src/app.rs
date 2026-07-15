@@ -12,6 +12,8 @@ use pksave::{Diagnostic, Severity};
 use crate::error::AppError;
 use crate::io::{self, IoEvent, SaveRequest};
 use crate::screens;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::sdcard;
 
 /// Mirror of the current dirty state for code outside the frame loop
 /// (the wasm `beforeunload` listener).
@@ -245,6 +247,14 @@ enum PendingAction {
         file_name: String,
         path: Option<std::path::PathBuf>,
     },
+    /// A save clicked in the SD-card panel: read from disk at perform
+    /// time (the card may have been pulled since discovery), then warn
+    /// about a shadowing save state.
+    #[cfg(not(target_arch = "wasm32"))]
+    OpenDiscovered {
+        path: std::path::PathBuf,
+        shadowing_state: Option<std::path::PathBuf>,
+    },
 }
 
 /// A transient status-bar confirmation (e.g. after a save).
@@ -252,6 +262,36 @@ struct Toast {
     message: String,
     /// `egui` time (seconds) after which the toast disappears.
     expires_at: f64,
+}
+
+/// SD-card discovery state (native only): the poller channel, the
+/// currently mounted cards and the shadow-state warning for the
+/// last-opened card save.
+#[cfg(not(target_arch = "wasm32"))]
+struct SdState {
+    /// Sender handed to the poller thread on the first frame (the
+    /// constructor has no `egui::Context` to give it earlier).
+    tx: Option<Sender<sdcard::SdEvent>>,
+    rx: Receiver<sdcard::SdEvent>,
+    cards: Vec<sdcard::OnionCard>,
+    panel_open: bool,
+    /// A save state that will override the just-opened card save on next
+    /// launch; drives the prominent warning modal.
+    shadow_warning: Option<std::path::PathBuf>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SdState {
+    fn new() -> SdState {
+        let (tx, rx) = std::sync::mpsc::channel();
+        SdState {
+            tx: Some(tx),
+            rx,
+            cards: Vec::new(),
+            panel_open: false,
+            shadow_warning: None,
+        }
+    }
 }
 
 pub struct App {
@@ -266,6 +306,8 @@ pub struct App {
     error: Option<AppError>,
     toast: Option<Toast>,
     close_confirmed: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    sd: SdState,
 }
 
 impl Default for App {
@@ -290,19 +332,38 @@ impl App {
             error: None,
             toast: None,
             close_confirmed: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            sd: SdState::new(),
         }
     }
 
-    fn load_bytes(&mut self, bytes: Vec<u8>, file_name: String, path: Option<std::path::PathBuf>) {
+    /// Load bytes as the new document. Returns whether it succeeded.
+    fn load_bytes(
+        &mut self,
+        bytes: Vec<u8>,
+        file_name: String,
+        path: Option<std::path::PathBuf>,
+    ) -> bool {
         match Doc::from_bytes(bytes, file_name, path) {
             Ok(doc) => {
                 publish_dirty(false);
                 self.doc = Some(doc);
                 self.ui = screens::ScreenState::default();
                 self.screen = Screen::Overview;
+                true
             }
-            Err(e) => self.error = Some(AppError::Load(e)),
+            Err(e) => {
+                self.error = Some(AppError::Load(e));
+                false
+            }
         }
+    }
+
+    fn show_toast(&mut self, now: f64, message: String) {
+        self.toast = Some(Toast {
+            message,
+            expires_at: now + TOAST_SECONDS,
+        });
     }
 
     fn poll_io(&mut self, now: f64) {
@@ -313,7 +374,9 @@ impl App {
                     file_name,
                     bytes,
                     path,
-                } => self.load_bytes(bytes, file_name, path),
+                } => {
+                    self.load_bytes(bytes, file_name, path);
+                }
                 IoEvent::Saved {
                     primary,
                     path,
@@ -321,6 +384,8 @@ impl App {
                     file_name,
                 } => {
                     let is_native = path.is_some();
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let saved_to = path.clone();
                     if let Some(doc) = &mut self.doc {
                         if primary {
                             doc.mark_saved();
@@ -345,13 +410,63 @@ impl App {
                             message.push_str(&format!(" — backup: {}", name.to_string_lossy()));
                         }
                     }
-                    self.toast = Some(Toast {
-                        message,
-                        expires_at: now + TOAST_SECONDS,
-                    });
+                    // Writing to a discovered card is fsynced by the save
+                    // flow, so once reported it is safe to pull the card.
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if saved_to
+                        .as_deref()
+                        .is_some_and(|p| sdcard::containing_card(&self.sd.cards, p).is_some())
+                    {
+                        message.push_str(" — safe to eject the SD card");
+                    }
+                    self.show_toast(now, message);
                 }
                 IoEvent::Cancelled => {}
                 IoEvent::Error(e) => self.error = Some(e),
+            }
+        }
+    }
+
+    /// Start the SD-card poller thread once (the first frame is the
+    /// earliest moment an `egui::Context` exists) and drain its events.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn poll_sd(&mut self, ctx: &egui::Context, now: f64) {
+        if let Some(tx) = self.sd.tx.take() {
+            sdcard::spawn_poller(tx, ctx.clone());
+        }
+        while let Ok(event) = self.sd.rx.try_recv() {
+            match event {
+                sdcard::SdEvent::CardDetected(card) => {
+                    let count = card.saves.len();
+                    let plural = if count == 1 { "" } else { "s" };
+                    self.show_toast(
+                        now,
+                        format!(
+                            "Miyoo SD card detected ({}) — {count} Pokémon save{plural}",
+                            card.volume_name
+                        ),
+                    );
+                    self.sd.cards.retain(|c| c.root != card.root);
+                    if count > 0 {
+                        self.sd.panel_open = true;
+                    }
+                    self.sd.cards.push(card);
+                }
+                sdcard::SdEvent::CardRemoved(root) => {
+                    self.sd.cards.retain(|c| c.root != root);
+                    if self.sd.cards.is_empty() {
+                        self.sd.panel_open = false;
+                    }
+                    self.show_toast(
+                        now,
+                        format!(
+                            "SD card removed ({})",
+                            root.file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| root.display().to_string())
+                        ),
+                    );
+                }
             }
         }
     }
@@ -451,7 +566,25 @@ impl App {
                 bytes,
                 file_name,
                 path,
-            } => self.load_bytes(bytes, file_name, path),
+            } => {
+                self.load_bytes(bytes, file_name, path);
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            PendingAction::OpenDiscovered {
+                path,
+                shadowing_state,
+            } => match std::fs::read(&path) {
+                Ok(bytes) => {
+                    let file_name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "card.srm".to_owned());
+                    if self.load_bytes(bytes, file_name, Some(path)) {
+                        self.sd.shadow_warning = shadowing_state;
+                    }
+                }
+                Err(source) => self.error = Some(AppError::Read { path, source }),
+            },
         }
     }
 
@@ -513,6 +646,17 @@ impl App {
                         .clicked()
                     {
                         self.request(ctx, PendingAction::Open);
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if ui
+                        .add_enabled(
+                            !self.sd.cards.is_empty(),
+                            egui::Button::new("SD card saves…"),
+                        )
+                        .on_disabled_hover_text("No OnionOS/Miyoo SD card detected")
+                        .clicked()
+                    {
+                        self.sd.panel_open = true;
                     }
                     ui.separator();
                     let has_doc = self.doc.is_some();
@@ -699,6 +843,133 @@ impl App {
         });
     }
 
+    /// The SD-card panel: every discovered card with its saves. Valid
+    /// saves open through the standard (guarded) open path; unparsable
+    /// ones are greyed with their diagnostic.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn sd_panel(&mut self, ctx: &egui::Context) {
+        if self.sd.cards.is_empty() || !self.sd.panel_open {
+            return;
+        }
+        let mut open = true;
+        let mut clicked: Option<PendingAction> = None;
+        egui::Window::new("SD card saves")
+            .open(&mut open)
+            .default_width(440.0)
+            .show(ctx, |ui| {
+                for (i, card) in self.sd.cards.iter().enumerate() {
+                    if i > 0 {
+                        ui.separator();
+                    }
+                    ui.heading(format!("💾 {}", card.volume_name));
+                    ui.weak(card.root.display().to_string());
+                    ui.add_space(4.0);
+                    if card.saves.is_empty() {
+                        ui.label("No Gen 1 saves found on this card.");
+                        continue;
+                    }
+                    for save in &card.saves {
+                        let origin = if save.legacy {
+                            format!("{} (legacy path)", save.profile)
+                        } else {
+                            save.profile.clone()
+                        };
+                        match &save.preview {
+                            Some(preview) => {
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .button(format!("📂 {}", save.rom_name))
+                                        .on_hover_text(save.path.display().to_string())
+                                        .clicked()
+                                    {
+                                        clicked = Some(PendingAction::OpenDiscovered {
+                                            path: save.path.clone(),
+                                            shadowing_state: save.shadowing_state.clone(),
+                                        });
+                                    }
+                                    ui.weak(origin);
+                                    if save.shadowing_state.is_some() {
+                                        ui.colored_label(ui.visuals().warn_fg_color, "⚠ state")
+                                            .on_hover_text(
+                                                "A save state exists and will override this \
+                                                 battery save on next launch",
+                                            );
+                                    }
+                                });
+                                ui.weak(format!(
+                                    "    {} · {} badge(s) · {} · {}",
+                                    preview.trainer_name,
+                                    preview.badges,
+                                    preview.play_time,
+                                    preview.party_summary
+                                ));
+                            }
+                            None => {
+                                ui.add_enabled(
+                                    false,
+                                    egui::Button::new(format!("📂 {}", save.rom_name)),
+                                );
+                                ui.weak(format!(
+                                    "    {} · {}",
+                                    origin,
+                                    save.diagnostic.as_deref().unwrap_or("could not parse")
+                                ));
+                            }
+                        }
+                        ui.add_space(2.0);
+                    }
+                }
+            });
+        self.sd.panel_open = open;
+        if let Some(action) = clicked {
+            self.request(ctx, action);
+        }
+    }
+
+    /// Prominent warning when the just-opened card save has a save state
+    /// that OnionOS will auto-load over it, discarding any edits.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn shadow_warning_modal(&mut self, ctx: &egui::Context) {
+        let now = ctx.input(|i| i.time);
+        let Some(state_path) = self.sd.shadow_warning.clone() else {
+            return;
+        };
+        egui::Modal::new(egui::Id::new("shadow_state_modal")).show(ctx, |ui| {
+            ui.heading("⚠ A save state will override your edits");
+            ui.add_space(4.0);
+            ui.label(
+                "OnionOS auto-loads save states (savestate_auto_load). This save state \
+                 will override the battery save the next time the game is launched, \
+                 discarding any edits you write back:",
+            );
+            ui.monospace(state_path.display().to_string());
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("Rename state (recommended)").clicked() {
+                    match sdcard::neutralize_state(&state_path) {
+                        Ok(renamed) => {
+                            let name = renamed
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| renamed.display().to_string());
+                            self.show_toast(now, format!("Save state renamed to {name}"));
+                        }
+                        Err(source) => {
+                            self.error = Some(AppError::RenameState {
+                                path: state_path.clone(),
+                                source,
+                            });
+                        }
+                    }
+                    self.sd.shadow_warning = None;
+                }
+                if ui.button("Ignore").clicked() {
+                    self.sd.shadow_warning = None;
+                }
+            });
+        });
+    }
+
     fn modals(&mut self, ctx: &egui::Context) {
         if self.pending.is_some() {
             let mut decided: Option<bool> = None;
@@ -751,6 +1022,8 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         let now = ctx.input(|i| i.time);
         self.poll_io(now);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.poll_sd(&ctx, now);
         self.handle_dropped_files(&ctx);
         self.handle_shortcuts(&ctx);
         #[cfg(not(target_arch = "wasm32"))]
@@ -760,6 +1033,11 @@ impl eframe::App for App {
         self.status_bar(ui);
         self.side_panel(ui);
         self.central(ui);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.sd_panel(&ctx);
+            self.shadow_warning_modal(&ctx);
+        }
         self.modals(&ctx);
 
         if let Some(doc) = &mut self.doc {
@@ -992,6 +1270,151 @@ mod tests {
             .expect("send");
         app.poll_io(0.0);
         assert!(matches!(app.error, Some(AppError::WasmSave(_))));
+    }
+
+    // ---- SD-card discovery wiring ----
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn fake_card(root: &std::path::Path) -> sdcard::OnionCard {
+        sdcard::OnionCard {
+            root: root.to_path_buf(),
+            volume_name: "ONION".to_owned(),
+            saves: Vec::new(),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn save_under_a_card_root_gets_the_eject_note() {
+        let mut app = App::new();
+        app.doc = Some(empty_doc());
+        app.sd
+            .cards
+            .push(fake_card(std::path::Path::new("/Volumes/ONION")));
+        app.io_tx
+            .send(IoEvent::Saved {
+                primary: true,
+                path: Some(std::path::PathBuf::from(
+                    "/Volumes/ONION/Saves/CurrentProfile/saves/Gambatte/RED.srm",
+                )),
+                backup: None,
+                file_name: "RED.srm".into(),
+            })
+            .expect("send");
+        app.poll_io(0.0);
+        let toast = app.toast.as_ref().expect("toast");
+        assert!(
+            toast.message.contains("safe to eject the SD card"),
+            "eject note expected: {}",
+            toast.message
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn save_outside_any_card_gets_no_eject_note() {
+        let mut app = App::new();
+        app.doc = Some(empty_doc());
+        app.sd
+            .cards
+            .push(fake_card(std::path::Path::new("/Volumes/ONION")));
+        app.io_tx
+            .send(IoEvent::Saved {
+                primary: true,
+                path: Some(std::path::PathBuf::from("/home/user/RED.srm")),
+                backup: None,
+                file_name: "RED.srm".into(),
+            })
+            .expect("send");
+        app.poll_io(0.0);
+        let toast = app.toast.as_ref().expect("toast");
+        assert!(!toast.message.contains("safe to eject"));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn card_events_update_cards_panel_and_toast() {
+        let ctx = egui::Context::default();
+        let mut app = App::new();
+        // Drop the poller sender so poll_sd does not spawn a real poller.
+        let tx = app.sd.tx.take().expect("unspawned poller sender");
+        tx.send(sdcard::SdEvent::CardDetected(sdcard::OnionCard {
+            root: std::path::PathBuf::from("/Volumes/ONION"),
+            volume_name: "ONION".to_owned(),
+            saves: vec![sdcard::DiscoveredSave {
+                path: std::path::PathBuf::from(
+                    "/Volumes/ONION/Saves/CurrentProfile/saves/Gambatte/RED.srm",
+                ),
+                rom_name: "RED".to_owned(),
+                profile: "CurrentProfile".to_owned(),
+                legacy: false,
+                preview: None,
+                diagnostic: Some("x".to_owned()),
+                shadowing_state: None,
+            }],
+        }))
+        .expect("send");
+        app.poll_sd(&ctx, 0.0);
+        assert_eq!(app.sd.cards.len(), 1);
+        assert!(app.sd.panel_open, "panel opens when a card has saves");
+        let toast = app.toast.as_ref().expect("toast");
+        assert!(
+            toast
+                .message
+                .contains("Miyoo SD card detected (ONION) — 1 Pokémon save"),
+            "detection toast: {}",
+            toast.message
+        );
+
+        tx.send(sdcard::SdEvent::CardRemoved(std::path::PathBuf::from(
+            "/Volumes/ONION",
+        )))
+        .expect("send");
+        app.poll_sd(&ctx, 1.0);
+        assert!(app.sd.cards.is_empty());
+        assert!(!app.sd.panel_open);
+        let toast = app.toast.as_ref().expect("toast");
+        assert!(toast.message.contains("SD card removed"));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn open_discovered_loads_the_doc_and_arms_the_shadow_warning() {
+        let ctx = egui::Context::default();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("RED.srm");
+        std::fs::write(&path, valid_save_bytes()).expect("seed save");
+        let state = dir.path().join("RED.state");
+
+        let mut app = App::new();
+        app.request(
+            &ctx,
+            PendingAction::OpenDiscovered {
+                path: path.clone(),
+                shadowing_state: Some(state.clone()),
+            },
+        );
+        let doc = app.doc.as_ref().expect("doc");
+        assert_eq!(doc.file_name, "RED.srm");
+        assert_eq!(doc.path.as_deref(), Some(path.as_path()));
+        assert_eq!(app.sd.shadow_warning.as_deref(), Some(state.as_path()));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn open_discovered_from_a_pulled_card_reports_a_read_error() {
+        let ctx = egui::Context::default();
+        let mut app = App::new();
+        app.request(
+            &ctx,
+            PendingAction::OpenDiscovered {
+                path: std::path::PathBuf::from("/nonexistent/RED.srm"),
+                shadowing_state: None,
+            },
+        );
+        assert!(app.doc.is_none());
+        assert!(matches!(app.error, Some(AppError::Read { .. })));
+        assert_eq!(app.sd.shadow_warning, None);
     }
 
     // ---- dirty / unsaved-changes guard (J2) ----

@@ -10,6 +10,8 @@ mod app;
 mod error;
 mod io;
 mod screens;
+#[cfg(not(target_arch = "wasm32"))]
+mod sdcard;
 mod widgets;
 
 #[cfg(not(target_arch = "wasm32"))]

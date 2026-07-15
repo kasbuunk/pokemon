@@ -117,11 +117,11 @@ fn handle_path(_handle: &rfd::FileHandle) -> Option<PathBuf> {
 
 #[cfg(not(target_arch = "wasm32"))]
 async fn save_flow(request: SaveRequest) -> IoEvent {
-    let Some(handle) = file_dialog()
-        .set_file_name(&request.default_file_name)
-        .save_file()
-        .await
-    else {
+    let mut dialog = file_dialog().set_file_name(&request.default_file_name);
+    if let Some(dir) = surviving_parent(request.original_path.as_deref()) {
+        dialog = dialog.set_directory(dir);
+    }
+    let Some(handle) = dialog.save_file().await else {
         return IoEvent::Cancelled;
     };
     write_picked(
@@ -177,6 +177,16 @@ pub fn write_picked(
             source,
         }),
     }
+}
+
+/// The directory to preset in the save dialog: the originally opened
+/// file's parent, but only while it still exists. If the file's volume
+/// vanished (SD card pulled mid-edit) the buffer is still in memory and
+/// the save dialog falls back to its default location instead of
+/// pointing at a dead mount.
+#[cfg(not(target_arch = "wasm32"))]
+fn surviving_parent(original: Option<&std::path::Path>) -> Option<&std::path::Path> {
+    original?.parent().filter(|p| p.is_dir())
 }
 
 /// Whether two paths name the same file, resolving symlinks and
@@ -237,7 +247,7 @@ fn create_backup(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn now_secs() -> u64 {
+pub(crate) fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -459,6 +469,26 @@ mod tests {
             IoEvent::Error(AppError::Write { path, .. }) => assert_eq!(path, target),
             _ => panic!("expected write error"),
         }
+    }
+
+    #[test]
+    fn surviving_parent_is_the_existing_dir_of_the_original() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let original = dir.path().join("poke.sav");
+        assert_eq!(
+            surviving_parent(Some(&original)),
+            Some(dir.path()),
+            "parent still mounted: preset the dialog there"
+        );
+    }
+
+    #[test]
+    fn surviving_parent_is_none_when_the_volume_vanished() {
+        // Simulates a pulled SD card: the original path's parent is gone.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let original = dir.path().join("card").join("poke.sav");
+        assert_eq!(surviving_parent(Some(&original)), None);
+        assert_eq!(surviving_parent(None), None);
     }
 
     #[test]
