@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/pksave", "crates/xtask"]
+members = ["crates/pksave", "crates/pksave-app", "crates/xtask"]
 
 [workspace.package]
 edition = "2021"

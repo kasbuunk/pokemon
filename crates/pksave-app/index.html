@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8" />
+    <title>pksave — Gen 1 save editor</title>
+
+    <!-- Trunk builds the wasm and injects the loader here. -->
+    <base data-trunk-public-url />
+    <link data-trunk rel="rust" data-wasm-opt="2" />
+
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+
+    <style>
+        html {
+            /* Remove touch delay: */
+            touch-action: manipulation;
+        }
+
+        body {
+            background: #202020;
+        }
+
+        @media (prefers-color-scheme: light) {
+            body {
+                background: #f0f0f0;
+            }
+        }
+
+        /* Make the canvas fill the whole browser window. */
+        html,
+        body {
+            overflow: hidden;
+            margin: 0 !important;
+            padding: 0 !important;
+            height: 100%;
+            width: 100%;
+        }
+
+        canvas {
+            margin-right: auto;
+            margin-left: auto;
+            display: block;
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+
+<body>
+    <canvas id="pksave_canvas"></canvas>
+</body>
+
+</html>
