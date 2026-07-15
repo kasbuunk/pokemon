@@ -77,9 +77,13 @@ pub fn name_edit(ui: &mut egui::Ui, id_salt: impl egui::AsIdSalt, current: &str)
     result
 }
 
-/// Label for an internal species index: the dex name, or a hex marker
-/// for MissingNo/glitch indexes.
+/// Label for an internal species index: the dex name, `(none)` for the
+/// empty byte 0x00 (e.g. an unset starter on a fresh save), or a hex
+/// marker for MissingNo/glitch indexes.
 pub fn species_label(internal: u8) -> String {
+    if internal == 0 {
+        return "(none)".to_owned();
+    }
     let dex = INDEX_TO_DEX[usize::from(internal)];
     if dex == 0 {
         format!("glitch 0x{internal:02X}")
@@ -122,15 +126,34 @@ pub fn search_combo(
 ) -> Option<u16> {
     let combo_id = ui.id().with(id_salt);
     let filter_id = combo_id.with("filter");
+    let open_id = combo_id.with("was_open");
+    // Whether the popup was already open last frame: on the first open
+    // frame the filter starts fresh and grabs keyboard focus.
+    let was_open = ui
+        .data_mut(|d| d.get_temp::<bool>(open_id))
+        .unwrap_or(false);
+    let mut is_open = false;
     let mut picked = None;
     egui::ComboBox::from_id_salt(combo_id)
         .selected_text(selected_text)
         .width(170.0)
+        // The default CloseOnClick would close the popup when the filter
+        // box itself is clicked; keep it open until a selection (closed
+        // manually below) or a click outside.
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show_ui(ui, |ui| {
-            let mut filter: String = ui
-                .data_mut(|d| d.get_temp::<String>(filter_id))
-                .unwrap_or_default();
-            ui.add(egui::TextEdit::singleline(&mut filter).hint_text("filter…"));
+            is_open = true;
+            let mut filter: String = if was_open {
+                ui.data_mut(|d| d.get_temp::<String>(filter_id))
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            let response = ui.add(egui::TextEdit::singleline(&mut filter).hint_text("filter…"));
+            if !was_open {
+                // Freshly opened: type into the filter right away.
+                response.request_focus();
+            }
             let needle = filter.to_lowercase();
             egui::ScrollArea::vertical()
                 .max_height(240.0)
@@ -145,7 +168,13 @@ pub fn search_combo(
                     }
                 });
             ui.data_mut(|d| d.insert_temp(filter_id, filter));
+            if picked.is_some() {
+                // CloseOnClickOutside keeps the popup open on inside
+                // clicks — close it explicitly after a selection.
+                ui.close();
+            }
         });
+    ui.data_mut(|d| d.insert_temp(open_id, is_open));
     if picked.is_some() {
         ui.data_mut(|d| d.remove_temp::<String>(filter_id));
     }
@@ -298,6 +327,40 @@ mod tests {
         assert_eq!(species_label(0x99), "#001 BULBASAUR");
         // Internal 0x1F maps to no dex entry (MissingNo family).
         assert_eq!(species_label(0x1F), "glitch 0x1F");
+        // 0x00 is the empty byte (unset starter on a fresh save), not a
+        // glitch species.
+        assert_eq!(species_label(0x00), "(none)");
+    }
+
+    /// Every non-ASCII symbol the UI renders must have a glyph in egui's
+    /// default fonts — anything missing shows up as a tofu box (□).
+    #[test]
+    fn ui_symbols_have_glyphs_in_default_fonts() {
+        use egui::text::{FontDefinitions, Fonts};
+
+        // Symbols used in proportional text (labels, buttons, headings).
+        const PROPORTIONAL: &str = "—·…é⚠🗑📂✚⬆⬇■💾★✏ℹ⛔➡•×";
+        // Symbols used in monospace text (hex ASCII gutter, diff lines).
+        const MONOSPACE: &str = "·é—";
+
+        let mut fonts = Fonts::new(
+            egui::epaint::text::TextOptions::default(),
+            FontDefinitions::default(),
+        );
+        for (family, symbols) in [
+            (egui::FontFamily::Proportional, PROPORTIONAL),
+            (egui::FontFamily::Monospace, MONOSPACE),
+        ] {
+            let coverage = fonts.fonts.font(&family).characters().clone();
+            for c in symbols.chars() {
+                assert!(
+                    coverage.contains_key(&c),
+                    "U+{:04X} {c:?} has no glyph in the default {family:?} fonts \
+                     and would render as tofu",
+                    c as u32
+                );
+            }
+        }
     }
 
     #[test]

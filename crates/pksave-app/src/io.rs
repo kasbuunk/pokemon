@@ -101,6 +101,33 @@ fn file_dialog() -> rfd::AsyncFileDialog {
     rfd::AsyncFileDialog::new().add_filter("Gen 1 save", &["sav", "srm", "bak"])
 }
 
+/// Whether a native file-dialog backend exists. rfd on Linux talks to
+/// the XDG desktop portal over the D-Bus session bus and falls back to
+/// the `zenity` CLI; with neither available every dialog silently
+/// resolves to `None`, indistinguishable from a user cancel. Probed
+/// once, on the first dialog request.
+#[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
+pub fn dialog_backend_available() -> bool {
+    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        let has_session_bus =
+            std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some_and(|v| !v.is_empty());
+        has_session_bus || zenity_on_path()
+    })
+}
+
+#[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
+fn zenity_on_path() -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("zenity").is_file()))
+}
+
+/// Every non-Linux target has a built-in dialog backend.
+#[cfg(not(all(not(target_arch = "wasm32"), target_os = "linux")))]
+pub fn dialog_backend_available() -> bool {
+    true
+}
+
 /// Show an open dialog and read the picked file.
 pub fn spawn_open(tx: Sender<IoEvent>, ctx: egui::Context) {
     spawn(move || async move {

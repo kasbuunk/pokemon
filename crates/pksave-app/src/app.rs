@@ -125,6 +125,10 @@ pub fn screen_for_diagnostic(diag: &Diagnostic) -> Screen {
 pub struct Doc {
     /// The bytes as loaded (or as last saved) — the dirty baseline.
     pub original: Vec<u8>,
+    /// The bytes exactly as opened, never rebaselined by a save: the
+    /// "Download original / Save copy of original" payload, so the
+    /// pristine file stays recoverable for the whole session.
+    pub loaded_original: Vec<u8>,
     pub save: SaveFile,
     pub file_name: String,
     /// Native: where the file was opened from (backup target on save).
@@ -149,9 +153,11 @@ impl Doc {
     ) -> Result<Doc, pksave::gen1::save::LoadError> {
         let save = SaveFile::from_bytes(bytes.clone())?;
         let variant = detect_variant(&save);
+        // Genuinely bad checksums in the file as opened must warn.
         let diagnostics = save.diagnostics();
         Ok(Doc {
             original: bytes.clone(),
+            loaded_original: bytes.clone(),
             save,
             file_name,
             path,
@@ -169,7 +175,8 @@ impl Doc {
         let bytes = save.to_bytes();
         Doc {
             original: bytes.clone(),
-            diagnostics: save.diagnostics(),
+            loaded_original: bytes.clone(),
+            diagnostics: serialized_diagnostics(&save, &bytes),
             save,
             file_name: "new.sav".to_owned(),
             path: None,
@@ -209,7 +216,7 @@ impl Doc {
         self.serialized = self.save.to_bytes();
         self.changed = changed_ranges(&self.original, &self.serialized);
         self.dirty = !self.changed.is_empty();
-        self.diagnostics = self.save.diagnostics();
+        self.diagnostics = serialized_diagnostics(&self.save, &self.serialized);
     }
 
     /// The edited bytes become the new baseline (after a successful save).
@@ -241,6 +248,28 @@ impl Doc {
     }
 }
 
+/// Diagnostics of the save *as it would be written*. The live buffer's
+/// stored checksums are only recomputed at `to_bytes()`, so diagnosing
+/// the live `SaveFile` would raise W-CHECKSUM-* after every routine edit
+/// even though the saved file will be fine. Instead the serialized bytes
+/// are reparsed and the live save's checksum pins are re-applied, so
+/// deliberately pinned mismatches (and I-CHECKSUM-PINNED) still surface.
+fn serialized_diagnostics(save: &SaveFile, serialized: &[u8]) -> Vec<Diagnostic> {
+    match SaveFile::from_bytes(serialized.to_vec()) {
+        Ok(mut reparsed) => {
+            for region in pksave::gen1::checksum::Region::ALL {
+                if let Some(value) = save.checksum_override(region) {
+                    reparsed.set_checksum_override(region, value);
+                }
+            }
+            reparsed.diagnostics()
+        }
+        // The serialized buffer always reparses (same length as the
+        // loaded one); fall back to the live buffer if that ever changes.
+        Err(_) => save.diagnostics(),
+    }
+}
+
 /// A destructive action awaiting confirmation while the document is dirty.
 #[derive(Clone, PartialEq, Eq)]
 enum PendingAction {
@@ -268,6 +297,23 @@ enum PendingAction {
     /// (guarded: it replaces any unsaved edits). Nothing is written to
     /// disk until the user saves.
     RestoreVersion(u64),
+}
+
+impl PendingAction {
+    /// The unsaved-changes modal heading, naming what the user is about
+    /// to do so the choice is unambiguous.
+    fn confirm_heading(&self) -> &'static str {
+        match self {
+            PendingAction::Open => "Open another file?",
+            PendingAction::New(_) => "Create a new file?",
+            PendingAction::Revert => "Revert to last saved state?",
+            PendingAction::Close => "Close pksave?",
+            PendingAction::LoadDropped { .. } => "Load the dropped file?",
+            #[cfg(not(target_arch = "wasm32"))]
+            PendingAction::OpenDiscovered { .. } => "Open the discovered save?",
+            PendingAction::RestoreVersion(_) => "Restore this version?",
+        }
+    }
 }
 
 /// A transient status-bar confirmation (e.g. after a save).
@@ -376,6 +422,8 @@ pub struct App {
     error: Option<AppError>,
     toast: Option<Toast>,
     close_confirmed: bool,
+    /// The window/tab title as last sent, to only send updates on change.
+    last_title: Option<String>,
     history: HistoryUi,
     #[cfg(not(target_arch = "wasm32"))]
     sd: SdState,
@@ -403,6 +451,7 @@ impl App {
             error: None,
             toast: None,
             close_confirmed: false,
+            last_title: None,
             history: HistoryUi::new(),
             #[cfg(not(target_arch = "wasm32"))]
             sd: SdState::new(),
@@ -467,6 +516,8 @@ impl App {
         match Doc::from_bytes(bytes, file_name, path) {
             Ok(doc) => {
                 publish_dirty(false);
+                // A stale error must not linger over the fresh document.
+                self.error = None;
                 self.doc = Some(doc);
                 self.ui = screens::ScreenState::default();
                 self.screen = Screen::Overview;
@@ -688,7 +739,7 @@ impl App {
     /// An Export blob arrived: hand it to the regular save-as flow
     /// (native dialog / wasm download) as a non-primary save.
     fn start_export(&mut self, ctx: &egui::Context, id: u64, bytes: Vec<u8>) {
-        if self.dialog_open {
+        if self.dialog_open || !self.dialog_backend_ok() {
             return;
         }
         let file_name = self
@@ -751,10 +802,26 @@ impl App {
         }
     }
 
+    /// Whether any blocking modal is on screen (drops are ignored while
+    /// one is up, so e.g. an error modal is never silently replaced).
+    fn any_modal_open(&self) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        let shadow = self.sd.shadow_warning.is_some();
+        #[cfg(target_arch = "wasm32")]
+        let shadow = false;
+        self.pending.is_some()
+            || self.error.is_some()
+            || self.history.pending_delete.is_some()
+            || shadow
+    }
+
     /// Route a dropped file through the same unsaved-changes guard as
-    /// File → Open: with unsaved edits, the payload is stashed and a
+    /// File -> Open: with unsaved edits, the payload is stashed and a
     /// confirmation modal decides its fate.
     fn handle_dropped_files(&mut self, ctx: &egui::Context) {
+        if self.any_modal_open() {
+            return;
+        }
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         let Some(file) = dropped.into_iter().next() else {
             return;
@@ -818,10 +885,23 @@ impl App {
         }
     }
 
+    /// Whether a file dialog can actually be shown. On Linux without
+    /// zenity or an XDG portal, rfd resolves to `None` immediately —
+    /// indistinguishable from a cancel — so surface a real error
+    /// instead of doing nothing.
+    fn dialog_backend_ok(&mut self) -> bool {
+        if io::dialog_backend_available() {
+            true
+        } else {
+            self.error = Some(AppError::NoDialogBackend);
+            false
+        }
+    }
+
     fn perform(&mut self, ctx: &egui::Context, action: PendingAction) {
         match action {
             PendingAction::Open => {
-                if !self.dialog_open {
+                if !self.dialog_open && self.dialog_backend_ok() {
                     self.dialog_open = true;
                     io::spawn_open(self.io_tx.clone(), ctx.clone());
                 }
@@ -876,16 +956,18 @@ impl App {
     }
 
     fn start_save(&mut self, ctx: &egui::Context, primary: bool) {
-        let Some(doc) = &self.doc else { return };
-        if self.dialog_open {
+        if self.dialog_open || !self.dialog_backend_ok() {
             return;
         }
+        let Some(doc) = &self.doc else { return };
         let request = SaveRequest {
             default_file_name: doc.file_name.clone(),
             bytes: if primary {
                 doc.save.to_bytes()
             } else {
-                doc.original.clone()
+                // The bytes as opened — never rebaselined by a save, so
+                // "Download original" keeps its meaning after saving.
+                doc.loaded_original.clone()
             },
             primary,
             original_path: if primary { doc.path.clone() } else { None },
@@ -1058,7 +1140,7 @@ impl App {
                 match &mut self.doc {
                     Some(doc) => {
                         if doc.dirty {
-                            ui.colored_label(ui.visuals().warn_fg_color, "●")
+                            ui.colored_label(ui.visuals().warn_fg_color, "•")
                                 .on_hover_text("Unsaved changes");
                         }
                         ui.label(&doc.file_name);
@@ -1073,22 +1155,41 @@ impl App {
                         let warnings = doc.warning_count();
                         if warnings == 0 {
                             ui.label("no warnings");
-                        } else if ui.link(format!("⚠ {warnings} warning(s)")).clicked() {
-                            self.screen = Screen::Overview;
+                        } else {
+                            let plural = if warnings == 1 { "" } else { "s" };
+                            if ui.link(format!("⚠ {warnings} warning{plural}")).clicked() {
+                                self.screen = Screen::Overview;
+                            }
                         }
                         ui.separator();
                         ui.label(doc.save.game_label());
                     }
                     None => {
-                        ui.label("No file loaded — File → Open, or drop a .sav here");
+                        ui.label("No file loaded — File -> Open, or drop a .sav here");
                     }
                 }
                 if let Some(toast) = &self.toast {
                     ui.separator();
                     let message = toast.message.clone();
-                    ui.colored_label(ui.visuals().hyperlink_color, message);
+                    // Long messages truncate (full text on hover) so the
+                    // naming field and dismiss button stay reachable.
+                    let reserved = if self.history.naming.is_some() {
+                        230.0
+                    } else {
+                        40.0
+                    };
+                    ui.scope(|ui| {
+                        ui.set_max_width((ui.available_width() - reserved).max(120.0));
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&message).color(ui.visuals().hyperlink_color),
+                            )
+                            .truncate(),
+                        )
+                        .on_hover_text(&message);
+                    });
                     self.naming_field(ui, now);
-                    if ui.small_button("✕").on_hover_text("Dismiss").clicked() {
+                    if ui.small_button("×").on_hover_text("Dismiss").clicked() {
                         self.toast = None;
                         self.history.naming = None;
                     } else {
@@ -1155,7 +1256,7 @@ impl App {
                 store.import_legacy();
             }
         }
-        if ui.small_button("✕").on_hover_text("Not now").clicked() {
+        if ui.small_button("×").on_hover_text("Not now").clicked() {
             self.history.legacy_offer = None;
             self.history.legacy_dismissed = true;
         }
@@ -1172,16 +1273,20 @@ impl App {
             .default_size(150.0)
             .show(ui, |ui| {
                 ui.add_space(4.0);
-                for (screen, badge) in badges {
-                    let label = if badge > 0 {
-                        format!("{}  ⚠{badge}", screen.label())
-                    } else {
-                        screen.label().to_owned()
-                    };
-                    if ui.selectable_label(self.screen == screen, label).clicked() {
-                        self.screen = screen;
+                // Justified: each row is clickable across the full panel
+                // width, not just on its text.
+                ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
+                    for (screen, badge) in badges {
+                        let label = if badge > 0 {
+                            format!("{}  ⚠{badge}", screen.label())
+                        } else {
+                            screen.label().to_owned()
+                        };
+                        if ui.selectable_label(self.screen == screen, label).clicked() {
+                            self.screen = screen;
+                        }
                     }
-                }
+                });
             });
     }
 
@@ -1403,11 +1508,12 @@ impl App {
     }
 
     fn modals(&mut self, ctx: &egui::Context) {
-        if self.pending.is_some() {
+        if let Some(pending) = &self.pending {
+            let heading = pending.confirm_heading();
             let mut decided: Option<bool> = None;
             egui::Modal::new(egui::Id::new("confirm_discard")).show(ctx, |ui| {
-                ui.heading("Unsaved changes");
-                ui.label("The current file has unsaved changes that will be lost. Continue?");
+                ui.heading(heading);
+                ui.label("Unsaved changes will be lost.");
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui.button("Discard changes").clicked() {
@@ -1449,7 +1555,7 @@ impl App {
         }
 
         if let Some(message) = self.error.as_ref().map(|e| e.to_string()) {
-            let mut close = false;
+            let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
             egui::Modal::new(egui::Id::new("error_modal")).show(ctx, |ui| {
                 ui.heading("Error");
                 ui.label(&message);
@@ -1462,6 +1568,30 @@ impl App {
                 self.error = None;
             }
         }
+    }
+
+    /// Keep the window (native) / tab (web) title in sync with the
+    /// loaded file and its dirty state: `*name — pksave` while dirty,
+    /// `name — pksave` otherwise.
+    fn update_window_title(&mut self, ctx: &egui::Context) {
+        let title = match &self.doc {
+            Some(doc) if doc.dirty => format!("*{} — pksave", doc.file_name),
+            Some(doc) => format!("{} — pksave", doc.file_name),
+            None => "pksave — Gen 1 save editor".to_owned(),
+        };
+        if self.last_title.as_deref() == Some(title.as_str()) {
+            return;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = ctx;
+            if let Some(document) = web_sys::window().and_then(|w| w.document()) {
+                document.set_title(&title);
+            }
+        }
+        self.last_title = Some(title);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1503,6 +1633,7 @@ impl eframe::App for App {
                 publish_dirty(doc.dirty);
             }
         }
+        self.update_window_title(&ctx);
     }
 }
 
@@ -1586,6 +1717,107 @@ mod tests {
             .find(|d| d.code.starts_with("W-CHECKSUM"))
             .expect("zeroed save has checksum warnings");
         assert_eq!(screen_for_diagnostic(checksum), Screen::Hex);
+    }
+
+    #[test]
+    fn routine_edit_raises_no_checksum_warnings() {
+        // The live buffer's stored checksums are only recomputed at
+        // to_bytes(); diagnostics must reflect the file as it would be
+        // saved, not the transient mismatch.
+        let mut doc = empty_doc();
+        assert_eq!(doc.warning_count(), 0, "fresh file is clean");
+        doc.save.set_money(123_456).expect("money in range");
+        doc.touch();
+        doc.end_frame();
+        assert!(doc.dirty);
+        assert_eq!(
+            doc.warning_count(),
+            0,
+            "a routine edit must not warn: {:?}",
+            doc.diagnostics
+        );
+    }
+
+    #[test]
+    fn corrupt_on_disk_checksums_still_warn() {
+        let mut bytes = valid_save_bytes();
+        bytes[pksave::gen1::offsets::MAIN_CHECKSUM] ^= 0xFF;
+        let doc = Doc::from_bytes(bytes, "corrupt.sav".into(), None).expect("loads");
+        assert!(
+            doc.diagnostics.iter().any(|d| d.code == "W-CHECKSUM-MAIN"),
+            "genuinely bad checksum on disk must warn: {:?}",
+            doc.diagnostics
+        );
+    }
+
+    #[test]
+    fn pinned_checksum_mismatch_still_warns_after_edits() {
+        let mut doc = empty_doc();
+        // Deliberately pin a wrong main checksum, then make an edit.
+        let good = doc.save.to_bytes()[pksave::gen1::offsets::MAIN_CHECKSUM];
+        doc.save
+            .set_checksum_override(pksave::gen1::checksum::Region::Main, good ^ 0xFF);
+        doc.save.set_money(999).expect("money in range");
+        doc.touch();
+        doc.end_frame();
+        assert!(
+            doc.diagnostics.iter().any(|d| d.code == "W-CHECKSUM-MAIN"),
+            "pinned mismatch surfaces: {:?}",
+            doc.diagnostics
+        );
+        assert!(
+            doc.diagnostics
+                .iter()
+                .any(|d| d.code == "I-CHECKSUM-PINNED"),
+            "pin is reported: {:?}",
+            doc.diagnostics
+        );
+    }
+
+    #[test]
+    fn loaded_original_survives_mark_saved() {
+        let bytes = valid_save_bytes();
+        let mut doc = Doc::from_bytes(bytes.clone(), "poke.sav".into(), None).expect("loads");
+        doc.save.set_player_id(0xBEEF);
+        doc.touch();
+        doc.end_frame();
+        doc.mark_saved();
+        assert_ne!(doc.original, bytes, "the dirty baseline rebaselined");
+        assert_eq!(
+            doc.loaded_original, bytes,
+            "the download-original payload never rebaselines"
+        );
+    }
+
+    #[test]
+    fn open_modal_blocks_drops_and_a_load_clears_the_error() {
+        let ctx = egui::Context::default();
+        let mut app = App::new();
+        app.error = Some(AppError::WasmSave("boom".into()));
+        assert!(app.any_modal_open(), "error modal counts as open");
+        assert!(app.load_bytes(&ctx, valid_save_bytes(), "ok.sav".into(), None));
+        assert!(
+            app.error.is_none(),
+            "a successful load clears the stale error"
+        );
+        assert!(!app.any_modal_open());
+    }
+
+    #[test]
+    fn confirm_headings_name_the_pending_action() {
+        assert_eq!(PendingAction::Open.confirm_heading(), "Open another file?");
+        assert_eq!(
+            PendingAction::New(GameVariant::RedBlue).confirm_heading(),
+            "Create a new file?"
+        );
+        assert_eq!(
+            PendingAction::Revert.confirm_heading(),
+            "Revert to last saved state?"
+        );
+        assert_eq!(
+            dropped_action("x.sav").confirm_heading(),
+            "Load the dropped file?"
+        );
     }
 
     #[test]

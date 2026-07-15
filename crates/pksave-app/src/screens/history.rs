@@ -65,7 +65,7 @@ pub fn ui(
     if !enabled {
         ui.colored_label(
             ui.visuals().warn_fg_color,
-            "Version history is off — new saves are not recorded (File → History).",
+            "Version history is off — new saves are not recorded (File -> History).",
         );
         ui.add_space(4.0);
     }
@@ -76,6 +76,7 @@ pub fn ui(
 
     let text_height = egui::TextStyle::Body.resolve(ui.style()).size + 8.0;
     let table = TableBuilder::new(ui)
+        .id_salt("history_table")
         .striped(true)
         .column(Column::exact(28.0)) // version id
         .column(Column::exact(140.0)) // time
@@ -165,7 +166,7 @@ pub fn ui(
         ui.separator();
         ui.horizontal(|ui| {
             ui.strong(format!("Diff: version {} vs current buffer", diff.id));
-            if ui.small_button("✕").on_hover_text("Close diff").clicked() {
+            if ui.small_button("×").on_hover_text("Close diff").clicked() {
                 close_diff = true;
             }
         });
@@ -210,7 +211,7 @@ fn name_cell(
                 let new_label = (!trimmed.is_empty()).then(|| trimmed.to_owned());
                 actions.push(HistoryAction::SetLabel(id, new_label));
                 state.editing = None;
-            } else if ui.small_button("✕").on_hover_text("Cancel").clicked() {
+            } else if ui.small_button("×").on_hover_text("Cancel").clicked() {
                 state.editing = None;
             }
             return;

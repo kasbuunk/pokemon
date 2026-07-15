@@ -54,8 +54,8 @@ impl Region {
     fn color(self, dark: bool) -> egui::Color32 {
         // One hue family per region, readable on both themes.
         match (self, dark) {
-            (Region::Bank0, true) => egui::Color32::from_gray(150),
-            (Region::Bank0, false) => egui::Color32::from_gray(110),
+            (Region::Bank0, true) => egui::Color32::from_gray(210),
+            (Region::Bank0, false) => egui::Color32::from_gray(70),
             (Region::MainData, true) => egui::Color32::from_rgb(130, 180, 255),
             (Region::MainData, false) => egui::Color32::from_rgb(30, 90, 200),
             (Region::Party, true) => egui::Color32::from_rgb(140, 220, 140),
@@ -146,7 +146,7 @@ pub fn ui(ui: &mut egui::Ui, doc: &mut Doc, state: &mut HexState) {
             .on_hover_text(
                 "Click a byte, then type a hex value. A hand-edited checksum byte is \
                  PINNED: it is kept verbatim on save (W-CHECKSUM warns if it mismatches \
-                 the data); Repair → Fix all checksums unpins and repairs it.",
+                 the data); Repair -> Fix all checksums unpins and repairs it.",
             );
         ui.separator();
         ui.label("Jump to offset (hex):");
@@ -225,6 +225,7 @@ pub fn ui(ui: &mut egui::Ui, doc: &mut Doc, state: &mut HexState) {
     // ---- table ----
     let text_height = egui::TextStyle::Monospace.resolve(ui.style()).size + 4.0;
     let mut table = TableBuilder::new(ui)
+        .id_salt("hex_table")
         .striped(true)
         .column(Column::exact(60.0));
     for _ in 0..BYTES_PER_ROW {

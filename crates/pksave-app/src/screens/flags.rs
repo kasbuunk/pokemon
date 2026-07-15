@@ -75,6 +75,7 @@ fn events_tab(ui: &mut egui::Ui, doc: &mut Doc, state: &mut FlagsState) {
     ui.weak(format!("{} named flag(s)", flags.len()));
 
     TableBuilder::new(ui)
+        .id_salt("flags_events")
         .striped(true)
         .column(Column::exact(60.0))
         .column(Column::exact(50.0))
@@ -148,12 +149,13 @@ fn hidden_items_tab(ui: &mut egui::Ui, doc: &mut Doc) {
     ui.colored_label(
         ui.visuals().warn_fg_color,
         "Advanced: raw hidden-item pickup bits (wObtainedHiddenItemsFlags). A set bit means \
-         the hidden item was already collected; clear it to respawn the item. The bit → \
+         the hidden item was already collected; clear it to respawn the item. The bit -> \
          location mapping lives in the pokered disassembly (data/events/hidden_objects.asm); \
          no names are available here.",
     );
     ui.add_space(4.0);
     TableBuilder::new(ui)
+        .id_salt("flags_hidden_items")
         .striped(true)
         .column(Column::exact(60.0))
         .column(Column::exact(70.0))
@@ -192,12 +194,13 @@ fn missables_tab(ui: &mut egui::Ui, doc: &mut Doc) {
     let mut touched = false;
     ui.colored_label(
         ui.visuals().warn_fg_color,
-        "Advanced: raw missable/toggleable overworld-object bits. The bit → object mapping \
+        "Advanced: raw missable/toggleable overworld-object bits. The bit -> object mapping \
          lives in the pokered disassembly (data/maps/toggleable_objects.asm); no names are \
          available here.",
     );
     ui.add_space(4.0);
     TableBuilder::new(ui)
+        .id_salt("flags_missables")
         .striped(true)
         .column(Column::exact(60.0))
         .column(Column::exact(50.0))
