@@ -28,8 +28,15 @@ jobs:
       - name: Install cargo-binstall
         uses: cargo-bins/cargo-binstall@main
 
+      # --force: rust-cache can restore .crates.toml claiming trunk is
+      # installed while ~/.cargo/bin lacks the binary.
       - name: Install trunk
-        run: cargo binstall --no-confirm trunk
+        run: cargo binstall --no-confirm --force trunk
+
+      - name: Enable GitHub Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
 
       - name: Build web app
         working-directory: crates/pksave-app
