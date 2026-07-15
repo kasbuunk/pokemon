@@ -8,6 +8,7 @@
 //!   core crate for the PyBoy end-to-end suite.
 
 mod charmap;
+mod e2e_fixtures;
 mod gen_tables;
 mod offsets_check;
 mod pins;
@@ -29,6 +30,10 @@ fn main() {
         Some("gen-offsets-check") => {
             let sym = flag_value(&args[1..], "--sym");
             std::process::exit(offsets_check::run(&sym));
+        }
+        Some("make-e2e-fixtures") => {
+            let out = flag_value(&args[1..], "--out");
+            e2e_fixtures::run(&out);
         }
         Some(cmd) => {
             eprintln!("unknown or not yet implemented command: {cmd}");
