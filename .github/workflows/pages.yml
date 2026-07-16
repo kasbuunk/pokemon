@@ -37,6 +37,13 @@ jobs:
       - name: SPA-style 404 fallback
         run: cp crates/pksave-app/dist/index.html crates/pksave-app/dist/404.html
 
+      # A broken data-trunk copy directive fails silently otherwise.
+      - name: Assert SEO assets shipped
+        run: |
+          for f in manifest.json robots.txt sitemap.xml og-image.png icon-192.png icon-512.png; do
+            test -f "crates/pksave-app/dist/$f" || { echo "missing dist/$f"; exit 1; }
+          done
+
       - name: Upload pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
