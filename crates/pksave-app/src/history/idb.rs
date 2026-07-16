@@ -40,6 +40,9 @@ use super::{
     VersionRow,
 };
 
+// Stable on purpose: the app was renamed to "Pokémon SRM Editor" but
+// this IndexedDB key must not change — renaming it would orphan every
+// existing user's save-version history.
 const DB_NAME: &str = "pksave-history";
 const DB_VERSION: u32 = 1;
 const MANIFESTS: &str = "manifests";

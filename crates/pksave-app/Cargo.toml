@@ -36,8 +36,11 @@ tempfile = "3"
 
 # macOS bundling (cargo-bundle): a signed .app with the removable-volumes
 # usage description gets a stable TCC prompt for SD-card scanning.
+# The identifier keeps the historical "pksave" name on purpose:
+# changing it would reset existing users' TCC (removable volumes)
+# grants. Only the display name carries the product name.
 [package.metadata.bundle]
-name = "pksave"
+name = "Pokémon SRM Editor"
 identifier = "com.kasbuunk.pksave"
 osx_info_plist_exts = ["assets/InfoPlist.ext.plist"]
 

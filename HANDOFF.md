@@ -10,7 +10,8 @@ Section A orients you; section D has every verification command.
 ## A. Orientation
 
 This repo is a fault-tolerant Pokémon Gen 1 (Red/Blue/Yellow) `.srm`/`.sav`
-save editor. Everything merged in PR #1.
+save editor. Everything merged in PR #1. The product is named **Pokémon SRM
+Editor** (formerly *pksave* — the crate names keep the old name on purpose).
 
 | Where | What |
 |---|---|

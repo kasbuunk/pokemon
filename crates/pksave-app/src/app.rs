@@ -306,7 +306,7 @@ impl PendingAction {
             PendingAction::Open => "Open another file?",
             PendingAction::New(_) => "Create a new file?",
             PendingAction::Revert => "Revert to last saved state?",
-            PendingAction::Close => "Close pksave?",
+            PendingAction::Close => "Close Pokémon SRM Editor?",
             PendingAction::LoadDropped { .. } => "Load the dropped file?",
             #[cfg(not(target_arch = "wasm32"))]
             PendingAction::OpenDiscovered { .. } => "Open the discovered save?",
@@ -1356,7 +1356,7 @@ impl App {
     fn empty_state(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.vertical_centered(|ui| {
             ui.add_space(ui.available_height() * 0.25);
-            ui.heading("pksave — Gen 1 save editor");
+            ui.heading("Pokémon SRM Editor");
             ui.add_space(8.0);
             ui.label("Open a Pokémon Red/Blue/Yellow save file (.sav / .srm) to start editing.");
             ui.add_space(16.0);
@@ -1376,6 +1376,11 @@ impl App {
             });
             ui.add_space(12.0);
             ui.weak("…or drag and drop a .sav file anywhere in this window.");
+            ui.add_space(24.0);
+            ui.weak(
+                "Fan-made and open source. Not affiliated with Nintendo, Game Freak or \
+                 The Pokémon Company.",
+            );
         });
     }
 
@@ -1570,13 +1575,20 @@ impl App {
     }
 
     /// Keep the window (native) / tab (web) title in sync with the
-    /// loaded file and its dirty state: `*name — pksave` while dirty,
-    /// `name — pksave` otherwise.
+    /// loaded file and its dirty state: `*name — Pokémon SRM Editor`
+    /// while dirty, `name — Pokémon SRM Editor` otherwise.
     fn update_window_title(&mut self, ctx: &egui::Context) {
+        // On web the idle title doubles as the crawlable <title> the
+        // first frame rewrites, so it matches index.html's SEO title;
+        // native keeps the short form.
+        #[cfg(not(target_arch = "wasm32"))]
+        const IDLE_TITLE: &str = "Pokémon SRM Editor — Gen 1 save editor";
+        #[cfg(target_arch = "wasm32")]
+        const IDLE_TITLE: &str = "Pokémon SRM Editor — Gen 1 (Red/Blue/Yellow) Save Editor Online";
         let title = match &self.doc {
-            Some(doc) if doc.dirty => format!("*{} — pksave", doc.file_name),
-            Some(doc) => format!("{} — pksave", doc.file_name),
-            None => "pksave — Gen 1 save editor".to_owned(),
+            Some(doc) if doc.dirty => format!("*{} — Pokémon SRM Editor", doc.file_name),
+            Some(doc) => format!("{} — Pokémon SRM Editor", doc.file_name),
+            None => IDLE_TITLE.to_owned(),
         };
         if self.last_title.as_deref() == Some(title.as_str()) {
             return;
