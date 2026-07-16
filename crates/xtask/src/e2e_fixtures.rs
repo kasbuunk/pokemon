@@ -57,6 +57,12 @@ pub fn run(out: &Path) {
             "complete_dex(): all 151 entries owned and seen",
             pokedex(),
         ),
+        (
+            "boxmon.sav",
+            "current box holds PIKACHU with level/exp coherent at 50 and \
+             CHARMANDER with a deliberately stale level byte (80, exp for 50)",
+            boxmon(),
+        ),
     ];
 
     let mut entries = Vec::new();
@@ -138,6 +144,35 @@ fn party() -> SaveFile {
 fn pokedex() -> SaveFile {
     let mut save = SaveFile::new_empty(GameVariant::RedBlue);
     save.complete_dex();
+    save
+}
+
+/// Two mons in the current box (the 0x30C0 working copy `LoadSAV`
+/// copies into WRAM): one fully coherent, one with a stale level byte —
+/// the game must load both byte-identically (a box mon's level derives
+/// from exp only on *withdrawal*, never on load).
+fn boxmon() -> SaveFile {
+    const TRAINER_ID: u16 = 12345;
+    let mut save = SaveFile::new_empty(GameVariant::RedBlue);
+    save.set_player_id(TRAINER_ID);
+    let player = save.player_name();
+
+    for (dex, level, moves) in [
+        (25u8, 50u8, &["THUNDERSHOCK", "GROWL"][..]), // PIKACHU
+        (4, 50, &["SCRATCH", "GROWL"][..]),           // CHARMANDER
+    ] {
+        let record = make_mon(dex, level, moves, TRAINER_ID);
+        let boxed = pksave::gen1::pokemon::party_to_box(&record);
+        save.box_mut(0)
+            .add(&boxed, &player, SPECIES_NAMES[usize::from(dex)])
+            .expect("box has room");
+        save.set_dex_owned(dex, true);
+        save.set_dex_seen(dex, true);
+    }
+    // Slot 1: stale level byte (exp still says 50) — the regression
+    // shape behind the level-drop bug.
+    save.box_mut(0).mon_mut(1).set_box_level(80);
+    save.sync_current_box_to_bank();
     save
 }
 
@@ -259,6 +294,42 @@ fn wram_expectations(save: &SaveFile, bytes: &[u8]) -> Vec<WramExpect> {
             i * offsets::NAME_LEN,
             offsets::NAME_LEN,
         ));
+    }
+
+    // Current-box working copy: LoadSAV copies sCurBoxData (0x30C0)
+    // verbatim into the WRAM box block starting at wNumInBox. Offsets
+    // within the block: species list +0x001, mon records +0x016 (33
+    // bytes each), OT names +0x2AA, nicknames +0x386 (docs/FORMAT.md).
+    let current_box = save.box_(usize::from(save.current_box_number()).min(11));
+    let box_len = current_box.len();
+    if box_len > 0 {
+        out.push(grab("wNumInBox", offsets::CURRENT_BOX, 0, 1));
+        out.push(grab(
+            "wNumInBox",
+            offsets::CURRENT_BOX + 0x001,
+            0x001,
+            box_len + 1,
+        ));
+        for i in 0..box_len {
+            out.push(grab(
+                "wNumInBox",
+                offsets::CURRENT_BOX + 0x016 + i * offsets::BOX_MON_SIZE,
+                0x016 + i * offsets::BOX_MON_SIZE,
+                offsets::BOX_MON_SIZE,
+            ));
+            out.push(grab(
+                "wNumInBox",
+                offsets::CURRENT_BOX + 0x2AA + i * offsets::NAME_LEN,
+                0x2AA + i * offsets::NAME_LEN,
+                offsets::NAME_LEN,
+            ));
+            out.push(grab(
+                "wNumInBox",
+                offsets::CURRENT_BOX + 0x386 + i * offsets::NAME_LEN,
+                0x386 + i * offsets::NAME_LEN,
+                offsets::NAME_LEN,
+            ));
+        }
     }
     out
 }
