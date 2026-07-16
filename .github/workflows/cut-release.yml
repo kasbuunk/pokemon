@@ -1,0 +1,48 @@
+name: Cut release
+
+# Release-by-commit: changing .release-version on main cuts a full
+# release under the tag it contains (gh creates the tag at that
+# commit). This is the release channel usable from environments whose
+# git access allows branch pushes but not tag pushes or workflow
+# dispatch (e.g. Claude sessions); pushing a v* tag directly still
+# works too (release.yml).
+on:
+  push:
+    branches: [main]
+    paths: [".release-version"]
+
+permissions:
+  contents: write
+
+jobs:
+  read-version:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.read.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read .release-version
+        id: read
+        run: |
+          TAG=$(tr -d '[:space:]' < .release-version)
+          case "$TAG" in
+            v[0-9]*) echo "tag=$TAG" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::.release-version must contain a tag like v0.1.0, got '$TAG'"; exit 1 ;;
+          esac
+      - name: Skip if the release already exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG=$(tr -d '[:space:]' < .release-version)
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::release $TAG already exists — bump .release-version to a new tag"
+            exit 1
+          fi
+
+  release:
+    needs: read-version
+    uses: ./.github/workflows/release.yml
+    permissions:
+      contents: write
+    with:
+      tag: ${{ needs.read-version.outputs.tag }}

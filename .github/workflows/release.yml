@@ -14,6 +14,14 @@ on:
         description: "Release tag to create (e.g. v0.1.0); empty = prerelease under a synthetic tag"
         required: false
         default: ""
+  # Reusable entry point for cut-release.yml (release-by-commit: bump
+  # .release-version on main).
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag to create"
+        required: true
+        type: string
 
 permissions:
   contents: write
