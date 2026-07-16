@@ -286,22 +286,138 @@ impl SaveFile {
 
         let party_mon = box_to_party(&mon);
         self.box_mut(box_n).remove(box_index);
+        self.party_append_raw(&party_mon, &ot, &nick);
+        Ok(())
+    }
 
-        // Raw party append, mirroring `PartyMut::add` (which takes
-        // decoded names; the raw bytes here must round-trip verbatim).
-        let i = party_len;
+    /// Raw party append, mirroring `PartyMut::add` (which takes decoded
+    /// names; the raw bytes here must round-trip verbatim). The caller
+    /// has checked there is room.
+    fn party_append_raw(
+        &mut self,
+        mon: &[u8; offsets::PARTY_MON_SIZE],
+        ot: &[u8; offsets::NAME_LEN],
+        nick: &[u8; offsets::NAME_LEN],
+    ) {
+        let i = self.party().len();
+        debug_assert!(i < offsets::PARTY_CAPACITY, "party capacity was checked");
         let buf = self.buf_mut();
         buf[party_layout::mon_at(i)..party_layout::mon_at(i) + offsets::PARTY_MON_SIZE]
-            .copy_from_slice(&party_mon);
+            .copy_from_slice(mon);
         buf[party_layout::ot_name_at(i)..party_layout::ot_name_at(i) + offsets::NAME_LEN]
-            .copy_from_slice(&ot);
+            .copy_from_slice(ot);
         buf[party_layout::nickname_at(i)..party_layout::nickname_at(i) + offsets::NAME_LEN]
-            .copy_from_slice(&nick);
+            .copy_from_slice(nick);
         let list = offsets::PARTY + party_layout::SPECIES_LIST;
-        buf[list + i] = party_mon[0];
+        buf[list + i] = mon[0];
         buf[offsets::PARTY + party_layout::COUNT] = (i + 1) as u8;
         buf[list + i + 1] = SENTINEL;
         buf[list + i + 2..list + party_layout::SPECIES_LIST_LEN].fill(0);
+    }
+
+    /// Move box slot `from_index` of box `from_box` into box `to_box`:
+    /// the 33-byte record, OT name and nickname bytes move verbatim (a
+    /// box→box move transforms nothing). Errors on out-of-range indexes
+    /// (including `from_box == to_box` — use [`BoxMut::swap`] to reorder
+    /// within a box) and on a full target box; nothing is written on
+    /// error.
+    pub fn move_box_to_box(
+        &mut self,
+        from_box: usize,
+        from_index: usize,
+        to_box: usize,
+    ) -> Result<(), TransferError> {
+        if from_box >= offsets::NUM_BOXES
+            || to_box >= offsets::NUM_BOXES
+            || from_box == to_box
+            || from_index >= self.box_(from_box).len()
+        {
+            return Err(TransferError::BadIndex);
+        }
+        if self.box_(to_box).len() >= offsets::MONS_PER_BOX {
+            return Err(TransferError::TargetFull);
+        }
+
+        let src = self.box_(from_box);
+        let mut mon = [0u8; offsets::BOX_MON_SIZE];
+        mon.copy_from_slice(src.mon(from_index).as_bytes());
+        let mut ot = [0u8; offsets::NAME_LEN];
+        ot.copy_from_slice(src.raw_ot_name(from_index));
+        let mut nick = [0u8; offsets::NAME_LEN];
+        nick.copy_from_slice(src.raw_nickname(from_index));
+
+        self.box_mut(from_box).remove(from_index);
+        self.box_mut(to_box)
+            .add_raw(&mon, &ot, &nick)
+            .expect("box capacity was checked");
+        Ok(())
+    }
+
+    /// Swap party slot `party_index` with box slot `box_index` of box
+    /// `box_n`, in place: the party mon is deposited into that exact box
+    /// slot ([`party_to_box`]) and the box mon withdrawn into that exact
+    /// party slot ([`box_to_party`], exp-derived level + recomputed
+    /// stats). OT name and nickname bytes swap verbatim. Capacity-
+    /// neutral, so it cannot fail on a full container; errors only on
+    /// out-of-range indexes, writing nothing.
+    pub fn swap_party_box(
+        &mut self,
+        party_index: usize,
+        box_n: usize,
+        box_index: usize,
+    ) -> Result<(), TransferError> {
+        if box_n >= offsets::NUM_BOXES
+            || party_index >= self.party().len()
+            || box_index >= self.box_(box_n).len()
+        {
+            return Err(TransferError::BadIndex);
+        }
+
+        // Copy the box-side trio out.
+        let src = self.box_(box_n);
+        let mut box_mon = [0u8; offsets::BOX_MON_SIZE];
+        box_mon.copy_from_slice(src.mon(box_index).as_bytes());
+        let mut box_ot = [0u8; offsets::NAME_LEN];
+        box_ot.copy_from_slice(src.raw_ot_name(box_index));
+        let mut box_nick = [0u8; offsets::NAME_LEN];
+        box_nick.copy_from_slice(src.raw_nickname(box_index));
+
+        // Copy the party-side trio out.
+        let buf = self.buf();
+        let mut party_mon = [0u8; offsets::PARTY_MON_SIZE];
+        party_mon.copy_from_slice(
+            &buf[party_layout::mon_at(party_index)
+                ..party_layout::mon_at(party_index) + offsets::PARTY_MON_SIZE],
+        );
+        let mut party_ot = [0u8; offsets::NAME_LEN];
+        party_ot.copy_from_slice(
+            &buf[party_layout::ot_name_at(party_index)
+                ..party_layout::ot_name_at(party_index) + offsets::NAME_LEN],
+        );
+        let mut party_nick = [0u8; offsets::NAME_LEN];
+        party_nick.copy_from_slice(
+            &buf[party_layout::nickname_at(party_index)
+                ..party_layout::nickname_at(party_index) + offsets::NAME_LEN],
+        );
+
+        // Deposit the party mon into the box slot, in place.
+        let deposited = party_to_box(&party_mon);
+        self.box_mut(box_n)
+            .replace_raw(box_index, &deposited, &party_ot, &party_nick);
+
+        // Withdraw the box mon into the party slot, in place.
+        let withdrawn = box_to_party(&box_mon);
+        let buf = self.buf_mut();
+        buf[party_layout::mon_at(party_index)
+            ..party_layout::mon_at(party_index) + offsets::PARTY_MON_SIZE]
+            .copy_from_slice(&withdrawn);
+        buf[party_layout::ot_name_at(party_index)
+            ..party_layout::ot_name_at(party_index) + offsets::NAME_LEN]
+            .copy_from_slice(&box_ot);
+        buf[party_layout::nickname_at(party_index)
+            ..party_layout::nickname_at(party_index) + offsets::NAME_LEN]
+            .copy_from_slice(&box_nick);
+        buf[offsets::PARTY + party_layout::SPECIES_LIST + party_index] = withdrawn[0];
         Ok(())
     }
 }
@@ -470,6 +586,31 @@ impl<'a> BoxMut<'a> {
         self.data[layout::SPECIES_LIST + i] = mon[0];
         self.write_count(i + 1);
         Ok(i)
+    }
+
+    /// Overwrite occupied slot `i` in place with already-encoded bytes
+    /// (mon record, OT name, nickname), keeping the species list in
+    /// sync. Count is unchanged. Used by [`SaveFile::swap_party_box`]
+    /// for positional swaps.
+    ///
+    /// # Panics
+    /// If `i >= len()`.
+    pub fn replace_raw(
+        &mut self,
+        i: usize,
+        mon: &[u8; offsets::BOX_MON_SIZE],
+        ot_name: &[u8; offsets::NAME_LEN],
+        nickname: &[u8; offsets::NAME_LEN],
+    ) {
+        let len = self.len();
+        assert!(i < len, "box slot {i} out of range (len {len})");
+        self.data[layout::mon_at(i)..layout::mon_at(i) + offsets::BOX_MON_SIZE]
+            .copy_from_slice(mon);
+        self.data[layout::ot_name_at(i)..layout::ot_name_at(i) + offsets::NAME_LEN]
+            .copy_from_slice(ot_name);
+        self.data[layout::nickname_at(i)..layout::nickname_at(i) + offsets::NAME_LEN]
+            .copy_from_slice(nickname);
+        self.data[layout::SPECIES_LIST + i] = mon[0];
     }
 
     /// Remove the mon in slot `i`, shifting later slots down. The

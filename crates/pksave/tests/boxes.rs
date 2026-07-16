@@ -374,6 +374,179 @@ fn withdraw_errors() {
 }
 
 #[test]
+fn move_box_to_box_moves_bytes_verbatim() {
+    let mut save = SaveFile::new_empty(GameVariant::RedBlue);
+    save.box_mut(2)
+        .add(&make_box_mon(6, 55), "RED", "ZARD")
+        .expect("room");
+    save.box_mut(2)
+        .add(&make_box_mon(9, 40), "RED", "BLASTY")
+        .expect("room");
+    let record = save.box_(2).mon(0).as_bytes().to_vec();
+
+    save.move_box_to_box(2, 0, 5).expect("valid move");
+
+    let dst = save.box_(5);
+    assert_eq!(dst.len(), 1);
+    assert_eq!(dst.mon(0).as_bytes(), &record[..], "record moves verbatim");
+    assert_eq!(dst.nickname(0), "ZARD");
+    assert_eq!(dst.ot_name(0), "RED");
+    let src = save.box_(2);
+    assert_eq!(src.len(), 1, "source repacked");
+    assert_eq!(src.nickname(0), "BLASTY");
+}
+
+#[test]
+fn move_box_to_box_routes_through_the_live_working_copy() {
+    // Box 0 is the current box on a fresh save: moves out of and into it
+    // must hit the working copy at 0x30C0, not its bank slot.
+    let mut save = SaveFile::new_empty(GameVariant::RedBlue);
+    save.box_mut(0)
+        .add(&make_box_mon(25, 42), "ASH", "SPARKY")
+        .expect("room");
+    save.sync_current_box_to_bank();
+    let before = save.as_bytes().to_vec();
+
+    save.move_box_to_box(0, 0, 7).expect("valid move");
+    let changed = changed_ranges(&before, save.as_bytes());
+    assert_within(
+        "move out of the live box",
+        &changed,
+        &[
+            offsets::CURRENT_BOX..offsets::CURRENT_BOX + offsets::BOX_LEN,
+            offsets::box_offset(7)..offsets::box_offset(7) + offsets::BOX_LEN,
+        ],
+    );
+    assert_eq!(save.box_(0).len(), 0);
+    assert_eq!(save.box_(7).len(), 1);
+}
+
+#[test]
+fn move_box_to_box_errors() {
+    let mut save = SaveFile::new_empty(GameVariant::RedBlue);
+    save.box_mut(2)
+        .add(&make_box_mon(1, 5), "RED", "MON")
+        .expect("room");
+    let before = save.as_bytes().to_vec();
+
+    assert_eq!(
+        save.move_box_to_box(2, 0, 2).unwrap_err(),
+        TransferError::BadIndex,
+        "same-box move is refused (use swap to reorder)"
+    );
+    assert_eq!(
+        save.move_box_to_box(2, 1, 5).unwrap_err(),
+        TransferError::BadIndex
+    );
+    assert_eq!(
+        save.move_box_to_box(12, 0, 5).unwrap_err(),
+        TransferError::BadIndex
+    );
+    assert_eq!(
+        save.move_box_to_box(2, 0, 12).unwrap_err(),
+        TransferError::BadIndex
+    );
+    assert_eq!(save.as_bytes(), &before[..], "failed moves write nothing");
+
+    for _ in 0..offsets::MONS_PER_BOX {
+        save.box_mut(5)
+            .add(&make_box_mon(1, 5), "RED", "MON")
+            .expect("room");
+    }
+    let before = save.as_bytes().to_vec();
+    assert_eq!(
+        save.move_box_to_box(2, 0, 5).unwrap_err(),
+        TransferError::TargetFull
+    );
+    assert_eq!(
+        save.as_bytes(),
+        &before[..],
+        "full-target move writes nothing"
+    );
+}
+
+#[test]
+fn swap_party_box_swaps_positionally() {
+    let mut save = SaveFile::new_empty(GameVariant::RedBlue);
+    save.party_mut()
+        .add(&make_party_mon(25, 42), "ASH", "SPARKY")
+        .expect("room");
+    save.party_mut()
+        .add(&make_party_mon(1, 10), "ASH", "BULBA")
+        .expect("room");
+    save.box_mut(3)
+        .add(&make_box_mon(4, 20), "RED", "CHAR")
+        .expect("room");
+    save.box_mut(3)
+        .add(&make_box_mon(151, 70), "RED", "MEW")
+        .expect("room");
+
+    // Swap party slot 0 (Pikachu 42) with box 3 slot 1 (Mew 70).
+    save.swap_party_box(0, 3, 1).expect("valid swap");
+
+    let party = save.party();
+    assert_eq!(party.len(), 2, "capacity-neutral");
+    let got = party.mon(0);
+    assert_eq!(got.species(), DEX_TO_INDEX[151], "Mew took party slot 0");
+    assert_eq!(got.level(), 70, "level derived from experience");
+    assert_eq!(party.nickname(0), "MEW");
+    assert_eq!(party.ot_name(0), "RED");
+    assert_eq!(party.nickname(1), "BULBA", "other party slot untouched");
+
+    let bx = save.box_(3);
+    assert_eq!(bx.len(), 2, "capacity-neutral");
+    let deposited = bx.mon(1);
+    assert_eq!(
+        deposited.species(),
+        DEX_TO_INDEX[25],
+        "Pikachu took box slot 1"
+    );
+    assert_eq!(deposited.box_level(), 42, "party level copied to the byte");
+    assert_eq!(bx.nickname(1), "SPARKY");
+    assert_eq!(bx.nickname(0), "CHAR", "other box slot untouched");
+}
+
+#[test]
+fn swap_party_box_touches_only_party_and_that_bank_block() {
+    let mut save = SaveFile::new_empty(GameVariant::RedBlue);
+    save.party_mut()
+        .add(&make_party_mon(25, 42), "ASH", "SPARKY")
+        .expect("room");
+    save.box_mut(9)
+        .add(&make_box_mon(4, 20), "RED", "CHAR")
+        .expect("room");
+    let before = save.as_bytes().to_vec();
+
+    save.swap_party_box(0, 9, 0).expect("valid swap");
+    let changed = changed_ranges(&before, save.as_bytes());
+    assert_within(
+        "swap_party_box",
+        &changed,
+        &[
+            offsets::PARTY..offsets::PARTY + offsets::PARTY_LEN,
+            offsets::box_offset(9)..offsets::box_offset(9) + offsets::BOX_LEN,
+        ],
+    );
+}
+
+#[test]
+fn swap_party_box_errors() {
+    let mut save = SaveFile::new_empty(GameVariant::RedBlue);
+    save.party_mut()
+        .add(&make_party_mon(25, 42), "ASH", "SPARKY")
+        .expect("room");
+    save.box_mut(3)
+        .add(&make_box_mon(4, 20), "RED", "CHAR")
+        .expect("room");
+    let before = save.as_bytes().to_vec();
+
+    assert_eq!(save.swap_party_box(1, 3, 0), Err(TransferError::BadIndex));
+    assert_eq!(save.swap_party_box(0, 3, 1), Err(TransferError::BadIndex));
+    assert_eq!(save.swap_party_box(0, 12, 0), Err(TransferError::BadIndex));
+    assert_eq!(save.as_bytes(), &before[..], "failed swaps write nothing");
+}
+
+#[test]
 fn deposit_to_non_current_box_touches_only_party_and_that_bank_block() {
     let mut save = SaveFile::new_empty(GameVariant::RedBlue);
     save.party_mut()
