@@ -4,12 +4,14 @@
 
 Changes go to `main` without waiting for human review, CI-gated:
 
-1. **Preferred:** open a PR and **immediately enable auto-merge
-   (squash)** on it — the merge then lands the moment all required CI
-   checks pass. Squash matches the repo's one-commit-per-PR history.
-   If enabling auto-merge fails (repo setting off / no required checks
-   yet — see issue #21), fall back to polling checks and squash-merging
-   on green.
+1. **Preferred:** open a PR and **immediately enable auto-merge with
+   the rebase method** — the branch's commits land on main individually
+   the moment all required CI checks pass. **Never squash.** Craft the
+   branch history accordingly: each commit self-contained (builds, tests
+   green on its own), one logical change per commit, imperative message
+   with a body explaining why. If enabling auto-merge fails (repo
+   setting off / no required checks yet — see issue #21), fall back to
+   polling checks and rebase-merging on green.
 2. Direct pushes to `main` are also sanctioned for trivial changes
    (docs, comments) where CI adds nothing.
 
