@@ -297,34 +297,35 @@ fn wram_expectations(save: &SaveFile, bytes: &[u8]) -> Vec<WramExpect> {
     }
 
     // Current-box working copy: LoadSAV copies sCurBoxData (0x30C0)
-    // verbatim into the WRAM box block starting at wNumInBox. Offsets
-    // within the block: species list +0x001, mon records +0x016 (33
-    // bytes each), OT names +0x2AA, nicknames +0x386 (docs/FORMAT.md).
+    // verbatim into the WRAM box block starting at wBoxCount (the first
+    // byte of wBoxDataStart in pokered). Offsets within the block:
+    // species list +0x001, mon records +0x016 (33 bytes each), OT names
+    // +0x2AA, nicknames +0x386 (docs/FORMAT.md).
     let current_box = save.box_(usize::from(save.current_box_number()).min(11));
     let box_len = current_box.len();
     if box_len > 0 {
-        out.push(grab("wNumInBox", offsets::CURRENT_BOX, 0, 1));
+        out.push(grab("wBoxCount", offsets::CURRENT_BOX, 0, 1));
         out.push(grab(
-            "wNumInBox",
+            "wBoxCount",
             offsets::CURRENT_BOX + 0x001,
             0x001,
             box_len + 1,
         ));
         for i in 0..box_len {
             out.push(grab(
-                "wNumInBox",
+                "wBoxCount",
                 offsets::CURRENT_BOX + 0x016 + i * offsets::BOX_MON_SIZE,
                 0x016 + i * offsets::BOX_MON_SIZE,
                 offsets::BOX_MON_SIZE,
             ));
             out.push(grab(
-                "wNumInBox",
+                "wBoxCount",
                 offsets::CURRENT_BOX + 0x2AA + i * offsets::NAME_LEN,
                 0x2AA + i * offsets::NAME_LEN,
                 offsets::NAME_LEN,
             ));
             out.push(grab(
-                "wNumInBox",
+                "wBoxCount",
                 offsets::CURRENT_BOX + 0x386 + i * offsets::NAME_LEN,
                 0x386 + i * offsets::NAME_LEN,
                 offsets::NAME_LEN,
