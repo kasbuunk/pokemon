@@ -4,10 +4,12 @@
 
 Changes go to `main` without waiting for human review, CI-gated:
 
-1. **Preferred:** open a PR, let CI run, **squash-merge as soon as all
-   checks are green** (use GitHub auto-merge if the repo setting is
-   enabled; otherwise poll checks and merge). Squash matches the repo's
-   one-commit-per-PR history.
+1. **Preferred:** open a PR and **immediately enable auto-merge
+   (squash)** on it — the merge then lands the moment all required CI
+   checks pass. Squash matches the repo's one-commit-per-PR history.
+   If enabling auto-merge fails (repo setting off / no required checks
+   yet — see issue #21), fall back to polling checks and squash-merging
+   on green.
 2. Direct pushes to `main` are also sanctioned for trivial changes
    (docs, comments) where CI adds nothing.
 
