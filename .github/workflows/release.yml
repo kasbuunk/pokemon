@@ -2,10 +2,18 @@ name: Release
 
 # Tag-triggered releases: push a tag like v0.1.0 (or run manually) to
 # build the desktop apps and publish a GitHub Release with checksums.
+# A manual run with the `tag` input publishes a full release under that
+# tag (gh creates the tag at the run's commit); without it, a
+# prerelease under a synthetic tag.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create (e.g. v0.1.0); empty = prerelease under a synthetic tag"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -107,10 +115,11 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          # A manual run (workflow_dispatch from a branch) publishes a
-          # prerelease under a synthetic tag instead of the branch name.
-          TAG: ${{ github.ref_type == 'tag' && github.ref_name || format('manual-{0}', github.run_number) }}
-          PRERELEASE: ${{ github.ref_type == 'tag' && ' ' || '--prerelease' }}
+          # Tag push, or manual run with the `tag` input, publishes a
+          # full release; a manual run without it publishes a prerelease
+          # under a synthetic tag. (`inputs` is empty on tag pushes.)
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || (inputs.tag != '' && inputs.tag || format('manual-{0}', github.run_number)) }}
+          PRERELEASE: ${{ (github.ref_type == 'tag' || inputs.tag != '') && ' ' || '--prerelease' }}
         run: |
           cat > notes.md << 'EOF'
           ## Install
