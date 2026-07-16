@@ -13,9 +13,18 @@ How Pokémon SRM Editor reaches users, and what each channel costs.
 
 ## Cutting a release
 
+Either push a tag:
+
 ```sh
 git tag v0.1.0 && git push origin v0.1.0
 ```
+
+…or bump `.release-version` on `main` (release-by-commit, for
+environments that can push branches but not tags — e.g. Claude
+sessions): change the file to the new tag and merge; `cut-release.yml`
+builds and publishes the release, creating the tag at that commit. A
+`workflow_dispatch` of `release.yml` with the `tag` input does the same
+from the Actions UI.
 
 The release workflow builds:
 
