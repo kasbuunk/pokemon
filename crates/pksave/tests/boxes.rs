@@ -15,14 +15,14 @@ const MONS: usize = 0x016;
 const OT_NAMES: usize = 0x2AA;
 const NICKNAMES: usize = 0x386;
 
-/// A coherent 33-byte box mon for the given National Dex number.
+/// A coherent 33-byte box mon for the given National Dex number:
+/// level byte and exp agree (`set_level_coherent`), then a battle-worn
+/// current HP of 23.
 fn make_box_mon(dex: usize, level: u8) -> [u8; offsets::BOX_MON_SIZE] {
     let mut bytes = [0u8; offsets::BOX_MON_SIZE];
     let mut mon = BoxMonMut::new(&mut bytes);
     mon.set_species(DEX_TO_INDEX[dex]);
-    mon.set_box_level(level);
     mon.set_ot_id(0x1234);
-    mon.set_current_hp(23);
     mon.set_dvs(Dvs {
         attack: 10,
         defense: 11,
@@ -30,6 +30,8 @@ fn make_box_mon(dex: usize, level: u8) -> [u8; offsets::BOX_MON_SIZE] {
         special: 13,
     });
     mon.set_stat_exps([100, 200, 300, 400, 500]);
+    mon.set_level_coherent(level);
+    mon.set_current_hp(23);
     bytes
 }
 
@@ -254,7 +256,7 @@ fn deposit_and_withdraw_round_trip_preserves_identity_and_recalculates_stats() {
     assert_eq!(party.len(), 1);
     let back = party.mon(0);
     assert_eq!(back.species(), DEX_TO_INDEX[25]);
-    assert_eq!(back.level(), 42, "level comes from the box level byte");
+    assert_eq!(back.level(), 42, "level derived from experience");
     assert_eq!(back.dvs(), dvs, "DVs preserved");
     assert_eq!(back.stat_exps(), stat_exps, "stat exp preserved");
     assert_eq!(party.nickname(0), "SPARKY");
@@ -296,6 +298,31 @@ fn withdraw_recalculates_stats_from_scratch() {
     assert_eq!(got.special(), refmon.special());
     // Current HP is carried over verbatim from the box record.
     assert_eq!(got.current_hp(), 23);
+}
+
+#[test]
+fn withdraw_uses_experience_not_the_box_level_byte() {
+    // Regression test for the level-drop bug: the game derives the
+    // withdrawal level from experience (`CalcLevelFromExperience`); a
+    // stale/edited box level byte must be ignored.
+    let mut save = SaveFile::new_empty(GameVariant::RedBlue);
+    let boxed = make_box_mon(25, 50); // Pikachu, exp coherent for 50
+    save.box_mut(0).add(&boxed, "RED", "PIKA").expect("room");
+    save.box_mut(0).mon_mut(0).set_box_level(80); // stale byte
+
+    save.withdraw(0, 0).expect("valid withdraw");
+    let party = save.party();
+    let got = party.mon(0);
+    assert_eq!(
+        got.level(),
+        50,
+        "withdrawal level derives from exp, not the box level byte"
+    );
+    assert_eq!(
+        got.box_level(),
+        80,
+        "the stale box byte is copied verbatim, like the game"
+    );
 }
 
 #[test]

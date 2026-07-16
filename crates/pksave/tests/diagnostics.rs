@@ -10,7 +10,7 @@ use pksave::gen1::checksum;
 use pksave::gen1::data::{DEX_TO_INDEX, INDEX_TO_DEX, MAP_NAMES};
 use pksave::gen1::detect::detect_variant;
 use pksave::gen1::offsets;
-use pksave::gen1::pokemon::{MonMut, PartyMonMut};
+use pksave::gen1::pokemon::{BoxMonMut, MonMut, PartyMonMut};
 use pksave::gen1::save::{GameVariant, SaveFile};
 use pksave::{Diagnostic, Severity};
 
@@ -140,6 +140,77 @@ fn level_above_100() {
         b[offsets::PARTY + 8 + 0x21] = 100;
     });
     assert!(with_code(&save, "W-LEVEL-RANGE").is_empty());
+
+    // Above 100 the exp-coherence check stays silent too (the editor's
+    // exp->level lookup caps at 100 and would misfire).
+    let save = broken(true, |b| {
+        install_party_mon(b, 25, 42);
+        b[offsets::PARTY + 8 + 0x21] = 101;
+    });
+    assert!(with_code(&save, "W-LEVEL-EXP-MISMATCH").is_empty());
+}
+
+#[test]
+fn party_level_exp_mismatch() {
+    // A coherent mon is clean...
+    let save = broken(true, |b| install_party_mon(b, 25, 42));
+    assert!(with_code(&save, "W-LEVEL-EXP-MISMATCH").is_empty());
+
+    // ...but editing the level byte without exp is exactly the mistake
+    // the game undoes on withdrawal, and must warn.
+    let level_at = offsets::PARTY + 8 + 0x21;
+    let save = broken(true, |b| {
+        install_party_mon(b, 25, 42);
+        b[level_at] = 60;
+    });
+    let d = assert_single(&save, "W-LEVEL-EXP-MISMATCH", level_at..level_at + 1);
+    assert!(
+        d.message.contains("level 42"),
+        "message names the exp-derived level: {}",
+        d.message
+    );
+}
+
+#[test]
+fn box_level_exp_mismatch() {
+    let mut save = SaveFile::new_empty(GameVariant::RedBlue);
+    let mut mon = [0u8; offsets::BOX_MON_SIZE];
+    {
+        let mut m = BoxMonMut::new(&mut mon);
+        m.set_species(DEX_TO_INDEX[25]);
+        m.set_level_coherent(42);
+    }
+    // Box 2 is not the current box, so no stale-copy noise.
+    save.box_mut(1).add(&mon, "RED", "PIKA").expect("room");
+    assert!(with_code(&save, "W-LEVEL-EXP-MISMATCH").is_empty());
+
+    save.box_mut(1).mon_mut(0).set_box_level(80);
+    let level_at = offsets::box_offset(1) + 0x016 + 0x03; // block + mon 0 + level byte
+    let d = assert_single(&save, "W-LEVEL-EXP-MISMATCH", level_at..level_at + 1);
+    assert!(
+        d.message.contains("box 2") && d.message.contains("level 42"),
+        "message names the box and the exp-derived level: {}",
+        d.message
+    );
+}
+
+#[test]
+fn daycare_level_exp_mismatch() {
+    let save = broken(true, |b| {
+        b[offsets::DAYCARE_IN_USE] = 1;
+        b[offsets::DAYCARE_MON] = DEX_TO_INDEX[25];
+        b[offsets::DAYCARE_MON + 0x03] = 10; // exp is 0 -> level 1
+    });
+    let level_at = offsets::DAYCARE_MON + 0x03;
+    let d = assert_single(&save, "W-LEVEL-EXP-MISMATCH", level_at..level_at + 1);
+    assert!(d.message.contains("daycare"));
+
+    // Not in use -> ignored.
+    let save = broken(true, |b| {
+        b[offsets::DAYCARE_MON] = DEX_TO_INDEX[25];
+        b[offsets::DAYCARE_MON + 0x03] = 10;
+    });
+    assert!(with_code(&save, "W-LEVEL-EXP-MISMATCH").is_empty());
 }
 
 #[test]

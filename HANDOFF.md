@@ -43,8 +43,10 @@ Probe specifically:
   must hit 0x30C0 + main checksum only; N≠current only its bank + 2 checksums).
 - Repacking edge cases: remove-at-count-boundary, add-after-remove, swap with
   daycare/HoF untouched; parallel-array alignment.
-- Box↔party conversion: withdraw recalculates stats from base+DV+statExp at
-  the box level byte; deposit copies party level into box level byte.
+- Box↔party conversion: withdraw derives the party level from experience
+  (`CalcLevelFromExperience` — the box level byte is cosmetic) and
+  recalculates stats from base+DV+statExp at that level; deposit copies
+  party level into box level byte.
 - BCD lossy path (`decode_lossy`) and money/coins clamps.
 - Text codec multi-char glyphs (`'r`, `<PK>`) encode/decode round-trip.
 - Hex-editor write path in the app (round-trips whole buffer through

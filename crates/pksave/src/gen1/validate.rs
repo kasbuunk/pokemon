@@ -15,6 +15,7 @@
 use super::boxes::{layout as box_layout, party_layout};
 use super::data::{INDEX_TO_DEX, MAP_NAMES};
 use super::items::{diagnose_item_list, BAG_LIST, PC_LIST};
+use super::pokemon::{BoxMonView, MonView, PartyMon, PartyMonView};
 use super::save::SaveFile;
 use super::text::TERMINATOR;
 use super::{bcd, checksum, offsets};
@@ -43,6 +44,7 @@ pub fn diagnose(save: &SaveFile) -> Vec<Diagnostic> {
     pinned_checksums(save, &mut diags);
     party(buf, &mut diags);
     boxes(buf, &mut diags);
+    level_exp_coherence(buf, &mut diags);
     diags.extend(diagnose_item_list(buf, &BAG_LIST));
     diags.extend(diagnose_item_list(buf, &PC_LIST));
     money_and_coins(buf, &mut diags);
@@ -224,6 +226,92 @@ fn boxes(buf: &[u8], diags: &mut Vec<Diagnostic>) {
                 ),
                 sentinel_at..sentinel_at + 1,
             ));
+        }
+    }
+}
+
+/// `W-LEVEL-EXP-MISMATCH`: a stored level byte that disagrees with the
+/// level the game derives from experience. The game trusts experience —
+/// on withdrawal (and at the next experience gain) it recomputes the
+/// level via `CalcLevelFromExperience`, so a mismatched mon silently
+/// changes level in play. Checked for occupied party slots (level byte
+/// `+0x21`), every slot of the 12 bank boxes and the current-box
+/// working copy (level byte `+0x03`), and the daycare. Glitch species
+/// (no growth curve; `W-SPECIES-INVALID` already fires) and levels
+/// above 100 (`W-LEVEL-RANGE`; the editor's exp→level lookup caps at
+/// 100 and would misfire) are skipped.
+fn level_exp_coherence(buf: &[u8], diags: &mut Vec<Diagnostic>) {
+    let skip = |species: u8, level: u8| {
+        INDEX_TO_DEX[usize::from(species)] == 0 || level > MAX_LEVEL || level == 0
+    };
+
+    let party_len =
+        usize::from(buf[offsets::PARTY + party_layout::COUNT]).min(offsets::PARTY_CAPACITY);
+    for i in 0..party_len {
+        let at = party_layout::mon_at(i);
+        let mon = PartyMonView::new(&buf[at..at + offsets::PARTY_MON_SIZE]);
+        if skip(mon.species(), mon.level()) {
+            continue;
+        }
+        let from_exp = mon.level_from_exp();
+        if mon.level() != from_exp {
+            let level_at = at + 0x21;
+            diags.push(warn(
+                "W-LEVEL-EXP-MISMATCH",
+                format!(
+                    "party slot {i} level {} does not match its experience: the game computes \
+                     level {from_exp} on withdrawal and at the next experience gain",
+                    mon.level()
+                ),
+                level_at..level_at + 1,
+            ));
+        }
+    }
+
+    let blocks = (0..offsets::NUM_BOXES)
+        .map(|n| (offsets::box_offset(n), format!("box {}", n + 1)))
+        .chain([(offsets::CURRENT_BOX, "current box".to_string())]);
+    for (base, label) in blocks {
+        let len = usize::from(buf[base + box_layout::COUNT]).min(offsets::MONS_PER_BOX);
+        for i in 0..len {
+            let at = base + box_layout::mon_at(i);
+            let mon = BoxMonView::new(&buf[at..at + offsets::BOX_MON_SIZE]);
+            if skip(mon.species(), mon.box_level()) {
+                continue;
+            }
+            let from_exp = mon.level_from_exp();
+            if mon.box_level() != from_exp {
+                let level_at = at + 0x03;
+                diags.push(warn(
+                    "W-LEVEL-EXP-MISMATCH",
+                    format!(
+                        "{label} slot {i} level byte is {} but its experience gives level \
+                         {from_exp}; the game derives level from experience on withdrawal",
+                        mon.box_level()
+                    ),
+                    level_at..level_at + 1,
+                ));
+            }
+        }
+    }
+
+    if buf[offsets::DAYCARE_IN_USE] != 0 {
+        let at = offsets::DAYCARE_MON;
+        let mon = BoxMonView::new(&buf[at..at + offsets::BOX_MON_SIZE]);
+        if !skip(mon.species(), mon.box_level()) {
+            let from_exp = mon.level_from_exp();
+            if mon.box_level() != from_exp {
+                let level_at = at + 0x03;
+                diags.push(warn(
+                    "W-LEVEL-EXP-MISMATCH",
+                    format!(
+                        "daycare mon level byte is {} but its experience gives level {from_exp}; \
+                         the game derives level from experience when it returns to the party",
+                        mon.box_level()
+                    ),
+                    level_at..level_at + 1,
+                ));
+            }
         }
     }
 }

@@ -410,14 +410,18 @@ fn box_to_party_restores_level_and_recalculates_stats() {
 }
 
 #[test]
-fn box_to_party_recomputes_stats_for_the_stored_level() {
-    // A raw box mon that never had party stats: withdraw computes them.
+fn box_to_party_recomputes_stats_for_the_exp_level() {
+    // A raw box mon that never had party stats: withdraw computes them
+    // at the level derived from experience. Exp sits mid-bracket to
+    // prove bracket membership (not just the exact threshold) decides.
     let pikachu = DEX_TO_INDEX[25];
+    let base = BASE_STATS[25];
     let mut boxed = [0u8; BOX_MON_SIZE];
     {
         let mut mon = BoxMonMut::new(&mut boxed);
         mon.set_species(pikachu);
         mon.set_box_level(42);
+        mon.set_exp(exp_for_level(base.growth_rate, 42) + 100);
         mon.set_dvs(Dvs {
             attack: 7,
             defense: 7,
@@ -428,7 +432,6 @@ fn box_to_party_recomputes_stats_for_the_stored_level() {
     }
     let party = box_to_party(&boxed);
     let view = PartyMonView::new(&party);
-    let base = BASE_STATS[25];
     assert_eq!(view.level(), 42);
     let dvs = view.dvs();
     assert_eq!(
@@ -439,6 +442,83 @@ fn box_to_party_recomputes_stats_for_the_stored_level() {
     assert_eq!(view.defense(), calc_stat(base.defense, 7, 3000, 42, false));
     assert_eq!(view.speed(), calc_stat(base.speed, 7, 4000, 42, false));
     assert_eq!(view.special(), calc_stat(base.special, 7, 5000, 42, false));
+}
+
+#[test]
+fn box_to_party_ignores_stale_box_level_byte() {
+    // Regression: a box mon whose level byte was edited without exp.
+    // The game withdraws it at the exp-derived level, so must we.
+    let bulbasaur = DEX_TO_INDEX[1];
+    let base = BASE_STATS[1];
+    let mut boxed = [0u8; BOX_MON_SIZE];
+    {
+        let mut mon = BoxMonMut::new(&mut boxed);
+        mon.set_species(bulbasaur);
+        mon.set_exp(exp_for_level(base.growth_rate, 50));
+        mon.set_box_level(80); // stale — exp says 50
+    }
+    let party = box_to_party(&boxed);
+    let view = PartyMonView::new(&party);
+    assert_eq!(view.level(), 50, "exp is authoritative");
+    assert_eq!(view.box_level(), 80, "stale byte copied verbatim");
+    assert_eq!(
+        view.max_hp(),
+        calc_stat(base.hp, view.dvs().hp_dv(), 0, 50, true),
+        "stats computed at the exp level"
+    );
+}
+
+#[test]
+fn box_set_level_coherent_sets_byte_exp_and_hp() {
+    let mewtwo = DEX_TO_INDEX[150];
+    let base = BASE_STATS[150];
+    let mut boxed = [0u8; BOX_MON_SIZE];
+    let mut mon = BoxMonMut::new(&mut boxed);
+    mon.set_species(mewtwo);
+    mon.set_dvs(Dvs {
+        attack: 15,
+        defense: 15,
+        speed: 15,
+        special: 15,
+    });
+    mon.set_level_coherent(70);
+    assert_eq!(mon.box_level(), 70);
+    assert_eq!(mon.exp(), exp_for_level(base.growth_rate, 70));
+    assert_eq!(mon.level_from_exp(), 70, "round-trips through exp");
+    let max_hp = calc_stat(base.hp, mon.dvs().hp_dv(), 0, 70, true);
+    assert_eq!(mon.current_hp(), max_hp, "full-healed to the new max HP");
+
+    // Lowering the level lowers current HP with it (never above max).
+    mon.set_level_coherent(30);
+    let max_hp_30 = calc_stat(base.hp, mon.dvs().hp_dv(), 0, 30, true);
+    assert_eq!(mon.current_hp(), max_hp_30);
+    assert!(max_hp_30 < max_hp);
+}
+
+#[test]
+fn party_sync_level_from_exp_accepts_the_exp_level() {
+    // The one-click "accept what the game will do" repair: level bytes
+    // and stats follow exp; exp and current HP stay untouched.
+    let charmander = DEX_TO_INDEX[4];
+    let base = BASE_STATS[4];
+    let mut bytes = [0u8; PARTY_MON_SIZE];
+    let mut mon = PartyMonMut::new(&mut bytes);
+    mon.set_species(charmander);
+    mon.set_level_coherent(20);
+    mon.set_current_hp(9);
+    let exp = mon.exp();
+    mon.set_level(55); // incoherent edit: level without exp
+
+    mon.sync_level_from_exp();
+    assert_eq!(mon.level(), 20);
+    assert_eq!(mon.box_level(), 20);
+    assert_eq!(mon.exp(), exp, "exp untouched");
+    assert_eq!(mon.current_hp(), 9, "current HP untouched");
+    assert_eq!(
+        mon.max_hp(),
+        calc_stat(base.hp, mon.dvs().hp_dv(), 0, 20, true),
+        "stats recomputed at the exp level"
+    );
 }
 
 // ---- traits: party/box parity over the shared 33 bytes ----

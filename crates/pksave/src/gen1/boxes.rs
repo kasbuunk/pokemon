@@ -262,10 +262,11 @@ impl SaveFile {
     }
 
     /// Move box slot `box_index` of box `box_n` into the party: the
-    /// game's withdrawal — the party level is taken from the box level
-    /// byte and the five calculated stats are recomputed from base
-    /// stats + DVs + stat exp ([`box_to_party`]). OT name and nickname
-    /// bytes move verbatim. Nothing is written on error.
+    /// game's withdrawal — the party level is computed from experience
+    /// (`CalcLevelFromExperience`; the box level byte is cosmetic and
+    /// not consulted) and the five calculated stats are recomputed from
+    /// base stats + DVs + stat exp ([`box_to_party`]). OT name and
+    /// nickname bytes move verbatim. Nothing is written on error.
     pub fn withdraw(&mut self, box_n: usize, box_index: usize) -> Result<(), TransferError> {
         if box_n >= offsets::NUM_BOXES || box_index >= self.box_(box_n).len() {
             return Err(TransferError::BadIndex);
