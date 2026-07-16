@@ -551,7 +551,13 @@ impl<'a> BoxMonMut<'a> {
         let base = BASE_STATS[usize::from(INDEX_TO_DEX[usize::from(self.species())])];
         self.set_box_level(level);
         self.set_exp(stats::exp_for_level(base.growth_rate, level));
-        let max_hp = stats::calc_stat(base.hp, self.dvs().hp_dv(), self.stat_exps()[0], level, true);
+        let max_hp = stats::calc_stat(
+            base.hp,
+            self.dvs().hp_dv(),
+            self.stat_exps()[0],
+            level,
+            true,
+        );
         self.set_current_hp(max_hp);
     }
 }

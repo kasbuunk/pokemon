@@ -49,8 +49,7 @@ const DEFAULT_MAX_VERSIONS: usize = 50;
 pub enum Screen {
     Overview,
     Trainer,
-    Party,
-    Boxes,
+    Pokemon,
     Items,
     Pokedex,
     Flags,
@@ -61,11 +60,10 @@ pub enum Screen {
 }
 
 impl Screen {
-    pub const ALL: [Screen; 11] = [
+    pub const ALL: [Screen; 10] = [
         Screen::Overview,
         Screen::Trainer,
-        Screen::Party,
-        Screen::Boxes,
+        Screen::Pokemon,
         Screen::Items,
         Screen::Pokedex,
         Screen::Flags,
@@ -79,8 +77,7 @@ impl Screen {
         match self {
             Screen::Overview => "Overview",
             Screen::Trainer => "Trainer",
-            Screen::Party => "Party",
-            Screen::Boxes => "Boxes",
+            Screen::Pokemon => "Pokémon",
             Screen::Items => "Items",
             Screen::Pokedex => "Pokédex",
             Screen::Flags => "Flags",
@@ -99,20 +96,22 @@ pub fn screen_for_diagnostic(diag: &Diagnostic) -> Screen {
     match diag.code {
         c if c.starts_with("W-CHECKSUM") || c == "I-CHECKSUM-PINNED" => Screen::Hex,
         c if c.starts_with("W-ITEMS") => Screen::Items,
-        "W-PARTY-COUNT" | "W-PARTY-SENTINEL" | "W-LEVEL-RANGE" => Screen::Party,
+        "W-PARTY-COUNT" | "W-PARTY-SENTINEL" | "W-LEVEL-RANGE" | "W-LEVEL-EXP-MISMATCH" => {
+            Screen::Pokemon
+        }
         "W-SPECIES-INVALID" => {
             // Party slot, daycare mon or box slot: route by span.
             match span_start {
                 Some(at) if (offsets::PARTY..offsets::PARTY + offsets::PARTY_LEN).contains(&at) => {
-                    Screen::Party
+                    Screen::Pokemon
                 }
                 _ => Screen::Overview,
             }
         }
-        c if c.starts_with("W-BOX") => Screen::Boxes,
+        c if c.starts_with("W-BOX") => Screen::Pokemon,
         "W-BCD-MONEY" | "W-BCD-COINS" => Screen::Trainer,
         "W-TEXT-UNTERMINATED" => match span_start {
-            Some(at) if at >= offsets::PARTY => Screen::Party,
+            Some(at) if at >= offsets::PARTY => Screen::Pokemon,
             _ => Screen::Trainer,
         },
         "W-DEX-RANGE" => Screen::Pokedex,
@@ -1269,8 +1268,9 @@ impl App {
             .map(|&s| (s, doc.badge_count(s)))
             .collect();
         egui::Panel::left("nav")
-            .resizable(false)
+            .resizable(true)
             .default_size(150.0)
+            .size_range(110.0..=260.0)
             .show(ui, |ui| {
                 ui.add_space(4.0);
                 // Justified: each row is clickable across the full panel
@@ -1302,8 +1302,7 @@ impl App {
             match self.screen {
                 Screen::Overview => screens::overview::ui(ui, doc, &mut goto),
                 Screen::Trainer => screens::trainer::ui(ui, doc),
-                Screen::Party => screens::party::ui(ui, doc, &mut self.ui.party),
-                Screen::Boxes => screens::boxes::ui(ui, doc, &mut self.ui.boxes),
+                Screen::Pokemon => screens::storage::ui(ui, doc, &mut self.ui.storage),
                 Screen::Items => screens::items::ui(ui, doc, &mut self.ui.items),
                 Screen::Pokedex => screens::pokedex::ui(ui, doc, &mut self.ui.pokedex),
                 Screen::Flags => screens::flags::ui(ui, doc, &mut self.ui.flags),

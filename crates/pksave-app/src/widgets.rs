@@ -339,7 +339,7 @@ mod tests {
         use egui::text::{FontDefinitions, Fonts};
 
         // Symbols used in proportional text (labels, buttons, headings).
-        const PROPORTIONAL: &str = "—·…é⚠🗑📂✚⬆⬇■💾★✏ℹ⛔➡•×";
+        const PROPORTIONAL: &str = "—·…é⚠🗑📂✚⬆⬇■💾★✏ℹ⛔➡•×∑↻≠";
         // Symbols used in monospace text (hex ASCII gutter, diff lines).
         const MONOSPACE: &str = "·é—";
 
