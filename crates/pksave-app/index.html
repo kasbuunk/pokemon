@@ -1,16 +1,63 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 
 <head>
     <meta charset="utf-8" />
-    <title>pksave — Gen 1 save editor</title>
+    <title>Pokémon SRM Editor — Gen 1 (Red/Blue/Yellow) Save Editor Online</title>
+    <meta name="description"
+        content="Free save editor for Pokémon Red, Blue and Yellow (.srm / .sav files). Edit party, PC boxes, items, badges and Pokédex in your browser — files never leave your device." />
+    <link rel="canonical" href="https://kasbuunk.github.io/pokemon/" />
+
     <!-- Inline favicon (a tiny Poké-ball) so the browser never 404s on /favicon.ico. -->
     <link rel="icon"
         href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%23e84b4b'/%3E%3Cpath d='M1 8a7 7 0 0 0 14 0z' fill='%23f4f4f4'/%3E%3Crect x='1' y='7.2' width='14' height='1.6' fill='%23303030'/%3E%3Ccircle cx='8' cy='8' r='2.2' fill='%23f4f4f4' stroke='%23303030'/%3E%3C/svg%3E" />
+    <link rel="apple-touch-icon" href="icon-192.png" />
+    <link rel="manifest" href="manifest.json" />
+    <meta name="theme-color" content="#202020" />
+
+    <!-- Open Graph / Twitter cards (og:image must be absolute). -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Pokémon SRM Editor" />
+    <meta property="og:title" content="Pokémon SRM Editor — Gen 1 (Red/Blue/Yellow) Save Editor Online" />
+    <meta property="og:description"
+        content="Free save editor for Pokémon Red, Blue and Yellow (.srm / .sav files). Edit party, PC boxes, items, badges and Pokédex in your browser — files never leave your device." />
+    <meta property="og:url" content="https://kasbuunk.github.io/pokemon/" />
+    <meta property="og:image" content="https://kasbuunk.github.io/pokemon/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Pokémon SRM Editor — Gen 1 (Red/Blue/Yellow) Save Editor Online" />
+    <meta name="twitter:description"
+        content="Free save editor for Pokémon Red, Blue and Yellow (.srm / .sav files). Runs entirely in your browser." />
+    <meta name="twitter:image" content="https://kasbuunk.github.io/pokemon/og-image.png" />
+
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "Pokémon SRM Editor",
+        "alternateName": "pksave",
+        "url": "https://kasbuunk.github.io/pokemon/",
+        "description": "Free save editor for Pokémon Red, Blue and Yellow (.srm / .sav battery saves). Edit party and box Pokémon, items, badges, Pokédex and more, in the browser or as a native desktop app.",
+        "applicationCategory": "UtilitiesApplication",
+        "operatingSystem": "Any (web); macOS, Windows, Linux (desktop)",
+        "browserRequirements": "Requires WebAssembly",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+        "sameAs": ["https://github.com/kasbuunk/pokemon"]
+    }
+    </script>
 
     <!-- Trunk builds the wasm and injects the loader here. -->
     <base data-trunk-public-url />
     <link data-trunk rel="rust" data-wasm-opt="2" />
+
+    <!-- Static assets copied into the site root by trunk. -->
+    <link data-trunk rel="copy-file" href="assets/web/manifest.json" />
+    <link data-trunk rel="copy-file" href="assets/web/robots.txt" />
+    <link data-trunk rel="copy-file" href="assets/web/sitemap.xml" />
+    <link data-trunk rel="copy-file" href="assets/web/og-image.png" />
+    <link data-trunk rel="copy-file" href="assets/web/icon-192.png" />
+    <link data-trunk rel="copy-file" href="assets/web/icon-512.png" />
 
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark light" />
@@ -51,11 +98,54 @@
             width: 100%;
             height: 100%;
         }
+
+        noscript {
+            display: block;
+            max-width: 640px;
+            margin: 3rem auto;
+            padding: 0 1rem;
+            color: #e6e6e6;
+            font-family: system-ui, sans-serif;
+            line-height: 1.5;
+        }
+
+        noscript a {
+            color: #7bb2e0;
+        }
     </style>
 </head>
 
 <body>
     <canvas id="pksave_canvas"></canvas>
+    <!-- The app is a WebAssembly canvas; this block is the crawlable /
+         no-JS description of what it does. -->
+    <noscript>
+        <h1>Pokémon SRM Editor</h1>
+        <p>
+            A free, open-source save editor for the Generation 1 Pokémon games —
+            <strong>Red, Blue and Yellow</strong>. It opens the battery save files
+            (<code>.srm</code> or <code>.sav</code>, raw 32&nbsp;KiB SRAM dumps) written by
+            emulators and flash carts, including RetroArch/Gambatte, the Miyoo Mini and
+            other OnionOS handhelds, the Analogue Pocket and real cartridges dumped to a
+            file. Edit your party and PC box Pokémon (levels, moves, DVs, stat experience),
+            items, money, badges, Pokédex, and more.
+        </p>
+        <p>
+            The editor runs entirely in your browser via WebAssembly — your save file is
+            never uploaded anywhere. It also ships as a native desktop app for macOS,
+            Windows and Linux.
+        </p>
+        <p>
+            This page needs JavaScript/WebAssembly to run the editor. You can also
+            <a href="https://github.com/kasbuunk/pokemon">download the desktop app or read
+                the source on GitHub</a>.
+        </p>
+        <p>
+            Fan-made and open source (MIT). Pokémon is a trademark of Nintendo / Creatures
+            Inc. / GAME FREAK inc.; this project is not affiliated with or endorsed by
+            Nintendo, Game Freak or The Pokémon Company.
+        </p>
+    </noscript>
 </body>
 
 </html>

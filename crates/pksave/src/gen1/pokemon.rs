@@ -3,8 +3,9 @@
 //! A *party mon* is 44 bytes ([`offsets::PARTY_MON_SIZE`]); a *box mon*
 //! is its first 33 bytes ([`offsets::BOX_MON_SIZE`]). Field layout per
 //! `docs/FORMAT.md` ("Pokémon structures"); all multi-byte integers are
-//! big-endian. The level byte at `+0x03` is the *box* level — stale for
-//! party mons, whose authoritative level lives at `+0x21`.
+//! big-endian. The level byte at `+0x03` is the *box* level — cosmetic
+//! (the game derives the withdrawal level from experience) and stale
+//! for party mons, whose authoritative level lives at `+0x21`.
 //!
 //! The field accessors live on sealed traits shared by the wrapper
 //! types: [`MonView`] (getters over the common 33 bytes), [`MonMut`]
@@ -21,7 +22,9 @@ use super::stats::{self, Dvs};
 mod off {
     pub const SPECIES: usize = 0x00;
     pub const CURRENT_HP: usize = 0x01;
-    /// Box copy of the level — stale in party records (see `LEVEL`).
+    /// Box copy of the level — cosmetic (the game derives the
+    /// withdrawal level from experience) and stale in party records
+    /// (see `LEVEL`).
     pub const BOX_LEVEL: usize = 0x03;
     pub const STATUS: usize = 0x04;
     pub const TYPE1: usize = 0x05;
@@ -288,6 +291,17 @@ pub trait MonView: sealed::Repr {
             self.raw()[off::PP + 3],
         ]
     }
+
+    /// The level the game computes from this record's experience
+    /// (`CalcLevelFromExperience` in pokered), capped at 100. This is
+    /// the level a box mon withdraws at — the box level byte (`+0x03`)
+    /// is cosmetic and never consulted on withdrawal. The game itself
+    /// has no 100 cap (glitch-level exp keeps counting past 100); this
+    /// editor clamps.
+    fn level_from_exp(&self) -> u8 {
+        let base = BASE_STATS[usize::from(INDEX_TO_DEX[usize::from(self.species())])];
+        stats::level_for_exp(base.growth_rate, self.exp())
+    }
 }
 
 impl MonView for PartyMonView<'_> {}
@@ -503,12 +517,48 @@ impl<'a> PartyMonMut<'a> {
         let max_hp = self.max_hp();
         self.set_current_hp(max_hp);
     }
+
+    /// Make the level bytes agree with experience, exactly as the game
+    /// does on withdrawal: level (`+0x21`) and the box level byte both
+    /// := [`MonView::level_from_exp`], and the five calculated stats
+    /// are recomputed at that level. Exp and current HP are left
+    /// untouched — this is the one-click "accept what the game will
+    /// do" repair.
+    pub fn sync_level_from_exp(&mut self) {
+        let level = self.level_from_exp();
+        self.set_level(level);
+        self.set_box_level(level);
+        self.recalculate_stats();
+    }
 }
 
 impl<'a> BoxMonMut<'a> {
     /// Read-only view of the same record.
     pub fn as_view(&self) -> BoxMonView<'_> {
         BoxMonView(self.0)
+    }
+
+    /// Set the level a box mon will withdraw at, coherently: the box
+    /// level byte (cosmetic — it only drives the in-game box list) and
+    /// exp := `exp_for_level(growth_rate, level)`, which is what the
+    /// game actually consults on withdrawal
+    /// (`CalcLevelFromExperience`). Deliberate policy, mirroring
+    /// [`PartyMonMut::set_level_coherent`]'s full heal: current HP :=
+    /// the max HP the withdrawal will compute, since current HP is
+    /// carried verbatim into the party and would otherwise exceed max
+    /// after a level decrease.
+    pub fn set_level_coherent(&mut self, level: u8) {
+        let base = BASE_STATS[usize::from(INDEX_TO_DEX[usize::from(self.species())])];
+        self.set_box_level(level);
+        self.set_exp(stats::exp_for_level(base.growth_rate, level));
+        let max_hp = stats::calc_stat(
+            base.hp,
+            self.dvs().hp_dv(),
+            self.stat_exps()[0],
+            level,
+            true,
+        );
+        self.set_current_hp(max_hp);
     }
 }
 
@@ -523,14 +573,18 @@ pub fn party_to_box(party: &[u8; offsets::PARTY_MON_SIZE]) -> [u8; offsets::BOX_
     out
 }
 
-/// Convert a box record to a party record, as a withdrawal does: the
-/// party level (`+0x21`) := box level (`+0x03`) and the five calculated
-/// stats are recomputed from base stats + DVs + stat exp. Current HP is
-/// kept as stored (it lives within the first 33 bytes).
+/// Convert a box record to a party record, exactly as the game's
+/// withdrawal does (`_MoveMon` in pokered `engine/pokemon/add_mon.asm`):
+/// the 33 box bytes are copied verbatim (so the — possibly stale — box
+/// level byte at `+0x03` is kept as-is, like the game), the party level
+/// (`+0x21`) := `CalcLevelFromExperience(exp, growth rate)` — the box
+/// level byte is *not consulted* — and the five calculated stats are
+/// recomputed from base stats + DVs + stat exp at that level. Current
+/// HP is copied verbatim, never healed or clamped.
 pub fn box_to_party(box_: &[u8; offsets::BOX_MON_SIZE]) -> [u8; offsets::PARTY_MON_SIZE] {
     let mut out = [0u8; offsets::PARTY_MON_SIZE];
     out[..offsets::BOX_MON_SIZE].copy_from_slice(box_);
-    out[off::LEVEL] = box_[off::BOX_LEVEL];
+    out[off::LEVEL] = BoxMonView::new(box_).level_from_exp();
     PartyMonMut::new(&mut out).recalculate_stats();
     out
 }

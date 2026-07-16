@@ -76,9 +76,12 @@ fn list_panel(
         ui.strong(format!("{title} — {len} / {capacity}"));
         ui.add_space(2.0);
 
+        // Fill the window height, keeping room for the add row below.
+        let list_height = (ui.available_height() - 76.0).max(160.0);
         egui::ScrollArea::vertical()
             .id_salt((title, "list"))
-            .max_height(420.0)
+            .max_height(list_height)
+            .auto_shrink([false, true])
             .show(ui, |ui| {
                 for index in 0..len {
                     let Some((id, qty)) = get_entry(doc, which, index) else {

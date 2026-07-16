@@ -1,0 +1,8 @@
+# Note: crawlers only honor robots.txt at the domain root, and this
+# site is served from the /pokemon/ subpath of a GitHub Pages domain —
+# so this file is informational until a custom domain fronts the app.
+# Sitemap discovery happens via Google Search Console instead.
+User-agent: *
+Allow: /
+
+Sitemap: https://kasbuunk.github.io/pokemon/sitemap.xml

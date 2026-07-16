@@ -1,4 +1,5 @@
-//! pksave-app: egui/eframe GUI for the `pksave` Gen 1 save editor.
+//! pksave-app: the Pokémon SRM Editor GUI (egui/eframe) over the
+//! `pksave` Gen 1 save-editing library.
 //!
 //! One codebase, two targets: a native desktop binary and a
 //! `wasm32-unknown-unknown` build bootstrapped by trunk (see `index.html`
@@ -22,9 +23,13 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1100.0, 740.0])
             .with_min_inner_size([900.0, 600.0])
-            .with_title("pksave — Gen 1 save editor"),
+            .with_title("Pokémon SRM Editor — Gen 1 save editor"),
         ..Default::default()
     };
+    // The app id stays "pksave" on purpose: it is invisible to users
+    // (Wayland app_id / X11 WM_CLASS / persistence key) and changing it
+    // would orphan existing window-state; the visible name is set via
+    // .with_title above and update_window_title in app.rs.
     eframe::run_native(
         "pksave",
         options,

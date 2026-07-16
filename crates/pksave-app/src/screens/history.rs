@@ -176,7 +176,8 @@ pub fn ui(
             let plural = if diff.byte_count == 1 { "" } else { "s" };
             ui.label(format!("{} byte{plural} differ:", diff.byte_count));
             egui::ScrollArea::vertical()
-                .max_height(160.0)
+                .max_height(ui.available_height().max(160.0))
+                .auto_shrink([false, true])
                 .show(ui, |ui| {
                     for line in &diff.lines {
                         ui.monospace(line);

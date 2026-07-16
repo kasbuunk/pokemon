@@ -138,7 +138,7 @@ Party mon, 44 bytes (box mon = first 33 bytes, i.e. through offset 0x20):
 |---|---|---|
 | 0x00 | 1 | Species (internal index) |
 | 0x01 | 2 | Current HP |
-| 0x03 | 1 | Level (box copy — stale in party; authoritative party level at 0x21) |
+| 0x03 | 1 | Level (box list display only — the withdrawal level derives from experience; stale in party, authoritative party level at 0x21) |
 | 0x04 | 1 | Status: bits0-2 sleep turns, bit3 poison, bit4 burn, bit5 freeze, bit6 paralysis |
 | 0x05 | 1 | Type 1 |
 | 0x06 | 1 | Type 2 (== type 1 if monotype) |
@@ -166,8 +166,14 @@ Party mon, 44 bytes (box mon = first 33 bytes, i.e. through offset 0x20):
   `E = floor(min(255, ceil(sqrt(min(stat_exp, 65535)))) / 4)`;
   `other = floor(((base + dv) * 2 + E) * level / 100) + 5`;
   `hp    = floor(((base + dv) * 2 + E) * level / 100) + level + 10`.
-- Box→party withdraw recomputes level-dependent fields: level byte 0x21 :=
-  box level (0x03) and the five stats from base stats + DVs + stat exp.
+- Box→party withdraw (`_MoveMon`, pokered `engine/pokemon/add_mon.asm`):
+  the 33 box bytes are copied verbatim (the box level byte 0x03 stays as-is,
+  stale), then party level 0x21 := `CalcLevelFromExperience(exp, growth rate)`
+  — the box level byte is *not consulted* — and the five stats are recomputed
+  from base stats + DVs + stat exp at that level. Current HP is copied
+  verbatim (no heal, no clamp).
+- Party→box deposit: the 33 shared bytes are copied verbatim, then the party
+  level 0x21 is copied over the box level byte 0x03. No recalculation.
 
 ## Hall of Fame (bank 0, 0x0598)
 
