@@ -1,0 +1,140 @@
+name: Release
+
+# Tag-triggered releases: push a tag like v0.1.0 (or run manually) to
+# build the desktop apps and publish a GitHub Release with checksums.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Install x86_64 target + cargo-bundle
+        run: |
+          rustup target add x86_64-apple-darwin
+          cargo install cargo-bundle --locked
+
+      - name: Build both architectures
+        run: |
+          cargo build --release -p pksave-app
+          cargo build --release -p pksave-app --target x86_64-apple-darwin
+
+      - name: Bundle universal .app
+        working-directory: crates/pksave-app
+        run: |
+          cargo bundle --release
+          APP="../../target/release/bundle/osx/Pokémon SRM Editor.app"
+          lipo -create \
+            "../../target/release/pksave-app" \
+            "../../target/x86_64-apple-darwin/release/pksave-app" \
+            -output "$APP/Contents/MacOS/pksave-app"
+          lipo -info "$APP/Contents/MacOS/pksave-app"
+          # Ad-hoc signature: free, keeps the bundle's TCC identity
+          # stable. Not notarized — users right-click → Open once (see
+          # docs/DISTRIBUTION.md for the paid Developer ID path).
+          codesign --force --deep -s - "$APP"
+
+      - name: Zip (ditto preserves the bundle)
+        run: |
+          cd target/release/bundle/osx
+          ditto -c -k --keepParent "Pokémon SRM Editor.app" \
+            "$GITHUB_WORKSPACE/Pokemon-SRM-Editor-macos-universal.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: Pokemon-SRM-Editor-macos-universal.zip
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Build
+        run: cargo build --release -p pksave-app
+      - name: Package
+        run: |
+          mkdir -p pkg
+          cp target/release/pksave-app "pkg/pokemon-srm-editor"
+          cp LICENSE README.md pkg/
+          tar czf Pokemon-SRM-Editor-linux-x86_64.tar.gz -C pkg .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: Pokemon-SRM-Editor-linux-x86_64.tar.gz
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Build
+        run: cargo build --release -p pksave-app
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p pkg
+          cp target/release/pksave-app.exe "pkg/Pokemon-SRM-Editor.exe"
+          cp LICENSE README.md pkg/
+          cd pkg && 7z a ../Pokemon-SRM-Editor-windows-x86_64.zip .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: Pokemon-SRM-Editor-windows-x86_64.zip
+
+  release:
+    needs: [macos, linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Checksums
+        run: shasum -a 256 Pokemon-SRM-Editor-* > SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # A manual run (workflow_dispatch from a branch) publishes a
+          # prerelease under a synthetic tag instead of the branch name.
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || format('manual-{0}', github.run_number) }}
+          PRERELEASE: ${{ github.ref_type == 'tag' && ' ' || '--prerelease' }}
+        run: |
+          cat > notes.md << 'EOF'
+          ## Install
+
+          **Web app (nothing to install):** https://kasbuunk.github.io/pokemon/
+
+          **macOS** (universal, Apple Silicon + Intel): download
+          `Pokemon-SRM-Editor-macos-universal.zip`, unzip, drag
+          `Pokémon SRM Editor.app` to Applications. The app is open source but
+          not notarized by Apple (that requires a paid developer account), so
+          the first launch needs one extra step: **right-click the app → Open →
+          Open**. Alternatively: `xattr -dc "/Applications/Pokémon SRM Editor.app"`.
+
+          **Windows:** unzip and run `Pokemon-SRM-Editor.exe` (SmartScreen may
+          ask once — "More info → Run anyway").
+
+          **Linux:** untar and run `./pokemon-srm-editor`.
+
+          Verify downloads: `shasum -a 256 -c SHA256SUMS.txt`.
+          EOF
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Pokémon SRM Editor $TAG" \
+            --notes-file notes.md \
+            $PRERELEASE \
+            --target "$GITHUB_SHA" \
+            Pokemon-SRM-Editor-* SHA256SUMS.txt
