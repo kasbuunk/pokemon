@@ -134,8 +134,9 @@ jobs:
 
           **Web app (nothing to install):** https://kasbuunk.github.io/pokemon/
 
-          **macOS** (universal, Apple Silicon + Intel): download
-          `Pokemon-SRM-Editor-macos-universal.zip`, unzip, drag
+          **macOS** (universal, Apple Silicon + Intel): with Homebrew, one
+          command — `brew install --cask --no-quarantine kasbuunk/tap/pokemon-srm-editor`.
+          Or download `Pokemon-SRM-Editor-macos-universal.zip`, unzip, drag
           `Pokémon SRM Editor.app` to Applications. The app is open source but
           not notarized by Apple (that requires a paid developer account), so
           the first launch needs one extra step: **right-click the app → Open →
@@ -155,3 +156,47 @@ jobs:
             $PRERELEASE \
             --target "$GITHUB_SHA" \
             Pokemon-SRM-Editor-* SHA256SUMS.txt
+
+  # Keep the Homebrew tap (kasbuunk/homebrew-tap) in sync: rewrite the
+  # cask's version + sha256 and push. Full releases only — prereleases
+  # under synthetic tags must not reach the cask. Skips with a notice
+  # when the HOMEBREW_TAP_TOKEN secret is absent (issue #26): GITHUB_TOKEN
+  # cannot push to another repository.
+  bump-tap:
+    needs: [release]
+    if: github.ref_type == 'tag' || inputs.tag != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos
+
+      - name: Bump cask in kasbuunk/homebrew-tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "::notice::HOMEBREW_TAP_TOKEN secret not set — skipping the Homebrew cask bump (see issue #26); bump the tap manually per docs/DISTRIBUTION.md."
+            exit 0
+          fi
+          VERSION="${TAG#v}"
+          SHA="$(shasum -a 256 Pokemon-SRM-Editor-macos-universal.zip | cut -d' ' -f1)"
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/kasbuunk/homebrew-tap.git" tap
+          cd tap
+          CASK=Casks/pokemon-srm-editor.rb
+          sed -i -E "s|^(  version \").*(\")\$|\1${VERSION}\2|" "$CASK"
+          sed -i -E "s|^(  sha256 \").*(\")\$|\1${SHA}\2|" "$CASK"
+          # sed never fails on no-match; assert the rewrite took.
+          grep -Fq "version \"${VERSION}\"" "$CASK"
+          grep -Fq "sha256 \"${SHA}\"" "$CASK"
+          if git diff --quiet; then
+            echo "Cask already at ${VERSION}; nothing to bump."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Bump pokemon-srm-editor to ${VERSION}
+
+          Automated by the release workflow of kasbuunk/pokemon for tag ${TAG}."
+          git push origin HEAD:main

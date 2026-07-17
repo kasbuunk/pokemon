@@ -83,12 +83,16 @@ install with
 `brew install --cask --no-quarantine kasbuunk/tap/pokemon-srm-editor`
 (`--no-quarantine` skips Gatekeeper for the unsigned app).
 
-After each release, bump the cask: update `version` and `sha256` (the
-macOS zip's line in the release's `SHA256SUMS.txt`) in the tap repo. The
-cask's `livecheck` follows the latest GitHub release, so
-`brew livecheck pokemon-srm-editor` reports when the cask lags. Automate
-later: a release-workflow step that opens a PR against the tap with the
-new version + hash (issue #20 tracks this as an optional follow-up).
+The release workflow's `bump-tap` job keeps the cask in sync: on every
+full release it rewrites the cask's `version` and `sha256` (recomputed
+from the macOS zip artifact) and pushes to the tap's `main` — the tap
+has no CI, so a PR there would add nothing. This needs the
+`HOMEBREW_TAP_TOKEN` repo secret (a fine-grained PAT with contents
+write on `kasbuunk/homebrew-tap`; issue #26): `GITHUB_TOKEN` cannot
+push cross-repo. Without the secret the job skips with a notice — then
+bump `version` + `sha256` (the macOS zip's line in `SHA256SUMS.txt`) in
+the tap by hand. The cask's `livecheck` follows the latest GitHub
+release, so `brew livecheck pokemon-srm-editor` reports a lagging cask.
 
 ## Manual, outside-the-repo checklist (one-time)
 
