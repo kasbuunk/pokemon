@@ -20,6 +20,17 @@ use transfer::DropTarget;
 /// How long a refused-drop notice stays visible.
 const NOTICE_SECONDS: f64 = 4.0;
 
+/// The center column (party strip + box grid) never gets squeezed below
+/// this by the detail panel; the panel's width range is derived from it
+/// every frame, so window shrinking takes space from the panel first.
+const CENTER_MIN_WIDTH: f32 = 380.0;
+/// Below this the side-by-side detail panel stops being useful; when
+/// even that doesn't fit next to [`CENTER_MIN_WIDTH`], the detail
+/// stacks under the grid instead.
+const DETAIL_MIN_WIDTH: f32 = 240.0;
+/// Preferred detail-panel width when there is room for it.
+const DETAIL_DEFAULT_WIDTH: f32 = 460.0;
+
 pub struct StorageState {
     pub selected: Option<SlotId>,
     /// The viewed box.
@@ -47,25 +58,41 @@ pub fn ui(ui: &mut egui::Ui, doc: &mut Doc, state: &mut StorageState) {
 
     let mut queued: Vec<Action> = Vec::new();
 
-    // ---- right: detail editor (the screen's one scroll container) ----
+    // ---- detail editor (the screen's one scroll container): beside the
+    // grid when it fits, stacked under it at very narrow viewports ----
     let mut touched = false;
     let mut touched_boxes: Vec<usize> = Vec::new();
-    egui::Panel::right("storage_detail")
-        .resizable(true)
-        .default_size(460.0)
-        .show(ui, |ui| {
-            egui::ScrollArea::vertical()
-                .id_salt("storage_detail_scroll")
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    if detail::ui(ui, doc, state.selected) {
-                        touched = true;
-                        if let Some(SlotId::Box { box_n, .. }) = state.selected {
-                            touched_boxes.push(box_n);
-                        }
+    let selected = state.selected;
+    let detail_contents = |ui: &mut egui::Ui| {
+        egui::ScrollArea::vertical()
+            .id_salt("storage_detail_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                if detail::ui(ui, doc, selected) {
+                    touched = true;
+                    if let Some(SlotId::Box { box_n, .. }) = selected {
+                        touched_boxes.push(box_n);
                     }
-                });
-        });
+                }
+            });
+    };
+    let avail = ui.available_width();
+    if avail < CENTER_MIN_WIDTH + DETAIL_MIN_WIDTH {
+        let avail_h = ui.available_height();
+        egui::Panel::bottom("storage_detail_stacked")
+            .resizable(true)
+            .max_size(avail_h * 0.6)
+            .default_size(avail_h * 0.4)
+            .show(ui, detail_contents);
+    } else {
+        let max_w = avail - CENTER_MIN_WIDTH;
+        egui::Panel::right("storage_detail")
+            .resizable(true)
+            .min_size(DETAIL_MIN_WIDTH.min(max_w))
+            .max_size(max_w)
+            .default_size(DETAIL_DEFAULT_WIDTH.min(max_w))
+            .show(ui, detail_contents);
+    }
 
     // ---- center: header, party strip, tabs, box grid, action row ----
     egui::CentralPanel::default().show(ui, |ui| {
@@ -466,5 +493,102 @@ fn apply_action(
                 touched_boxes.push(n);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    //! Headless layout regressions (issue #38): the detail panel must
+    //! never squeeze the center column below a working grid width.
+
+    use pksave::gen1::save::GameVariant;
+
+    use super::*;
+
+    struct Layout {
+        /// `available_width()` handed to the screen by its parent.
+        avail: f32,
+        /// Width of the side-by-side detail panel, if it was shown.
+        side_panel_w: Option<f32>,
+        /// Height of the stacked (bottom) detail panel, if it was shown.
+        stacked_panel_h: Option<f32>,
+    }
+
+    /// Render the storage screen for a few frames at the given viewport
+    /// size in a headless egui context and report the resulting layout.
+    fn layout_at(size: egui::Vec2) -> Layout {
+        let ctx = egui::Context::default();
+        let mut doc = Doc::new_empty(GameVariant::RedBlue);
+        let mut state = StorageState::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+            ..Default::default()
+        };
+        let mut avail = 0.0;
+        for _ in 0..3 {
+            let _ = ctx.run_ui(input.clone(), |ui| {
+                avail = ui.available_width();
+                super::ui(ui, &mut doc, &mut state);
+            });
+        }
+        let panel_size =
+            |id: &str| egui::PanelState::load(&ctx, egui::Id::new(id)).map(|s| s.outer_rect.size());
+        Layout {
+            avail,
+            side_panel_w: panel_size("storage_detail").map(|s| s.x),
+            stacked_panel_h: panel_size("storage_detail_stacked").map(|s| s.y),
+        }
+    }
+
+    /// Whatever the mode, the center column keeps a usable width.
+    fn assert_center_keeps_width(layout: &Layout, size: egui::Vec2) {
+        match (layout.side_panel_w, layout.stacked_panel_h) {
+            (Some(w), None) => {
+                let center = layout.avail - w;
+                assert!(
+                    center >= CENTER_MIN_WIDTH - 0.5,
+                    "detail panel ({w}px) squeezes the center to {center}px at {size:?}"
+                );
+            }
+            (None, Some(h)) => {
+                // Stacked: the grid gets the full width; the detail must
+                // still leave the grid its minimum height.
+                assert!(
+                    h <= size.y * 0.65,
+                    "stacked detail ({h}px) swallows the grid at {size:?}"
+                );
+            }
+            other => panic!("expected exactly one detail panel, got {other:?} at {size:?}"),
+        }
+    }
+
+    #[test]
+    fn wide_viewport_keeps_default_panel_width() {
+        let layout = layout_at(egui::vec2(1100.0, 740.0));
+        let w = layout.side_panel_w.expect("side-by-side at 1100pt");
+        assert!(
+            (w - DETAIL_DEFAULT_WIDTH).abs() < 1.0,
+            "default width regressed: {w}"
+        );
+        assert_center_keeps_width(&layout, egui::vec2(1100.0, 740.0));
+    }
+
+    #[test]
+    fn narrow_640x400_keeps_grid_width() {
+        // The issue #38 repro: at 640×400 the panel's old fixed 460pt
+        // default collapsed the grid to a ~20pt sliver.
+        let layout = layout_at(egui::vec2(640.0, 400.0));
+        assert_center_keeps_width(&layout, egui::vec2(640.0, 400.0));
+    }
+
+    #[test]
+    fn very_narrow_viewport_stacks_the_detail() {
+        let layout = layout_at(egui::vec2(500.0, 400.0));
+        assert!(
+            layout.side_panel_w.is_none() && layout.stacked_panel_h.is_some(),
+            "expected the stacked layout below {}pt",
+            CENTER_MIN_WIDTH + DETAIL_MIN_WIDTH
+        );
+        assert_center_keeps_width(&layout, egui::vec2(500.0, 400.0));
     }
 }
