@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = ["crates/pksave", "crates/pksave-app", "crates/xtask"]
+# The fuzz crate (nightly + libFuzzer only) builds as its own workspace.
+exclude = ["crates/pksave/fuzz"]
 
 [workspace.package]
 edition = "2021"

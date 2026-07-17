@@ -18,6 +18,9 @@
 
 pub mod gen1;
 
+#[doc(hidden)]
+pub mod fuzz_support;
+
 /// Severity of a [`Diagnostic`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
