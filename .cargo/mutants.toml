@@ -8,10 +8,11 @@
 # blanket: every `|` in each listed function is a disjoint-operand pack.
 #
 # Known-equivalent but NOT excluded (kept visible on purpose, expect
-# them as "missed"): five `+ with -` mutants in validate.rs (party,
-# boxes, level_exp_coherence x2, text_terminators) that add the layout
-# constant COUNT == 0, where +0 == -0. A function-scoped exclude would
-# also hide future real span-arithmetic regressions in those functions.
+# them as "missed"): six `+ with -` mutants that add the layout
+# constant COUNT == 0, where +0 == -0 — five in validate.rs (party,
+# boxes, level_exp_coherence x2, text_terminators) and one in
+# boxes.rs party_append_raw (the count-byte write). A function-scoped
+# exclude would also hide future real arithmetic regressions there.
 exclude_re = [
     'replace \| with \^ in encode',                            # bcd: (hi<<4) | lo, lo < 16
     'replace \| with \^ in SaveFile::set_current_box_number',  # (byte & 0x80) | n, n < 12
