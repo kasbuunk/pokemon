@@ -1,0 +1,29 @@
+[package]
+name = "pksave-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.pksave]
+path = ".."
+
+[[bin]]
+name = "save_walk"
+path = "fuzz_targets/save_walk.rs"
+test = false
+doc = false
+bench = false
+
+# Its own workspace: the fuzz crate needs nightly + libFuzzer and must
+# stay out of the stable-toolchain root workspace builds.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
