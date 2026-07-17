@@ -354,59 +354,61 @@ fn box_grid(
 /// Button fallbacks for the selected slot plus the "add Pokémon" group —
 /// everything the drags do, reachable without a mouse drag.
 fn action_row(ui: &mut egui::Ui, doc: &Doc, state: &mut StorageState, queued: &mut Vec<Action>) {
-    ui.horizontal(|ui| {
-        let party_full = doc.save.party().len() >= offsets::PARTY_CAPACITY;
-        let box_full = doc.save.box_(state.tab).len() >= offsets::MONS_PER_BOX;
+    let party_full = doc.save.party().len() >= offsets::PARTY_CAPACITY;
+    let box_full = doc.save.box_(state.tab).len() >= offsets::MONS_PER_BOX;
 
-        match state.selected {
-            Some(slot @ SlotId::Party(_)) => {
-                if ui
-                    .add_enabled(!box_full, egui::Button::new("Deposit ➡ this box"))
-                    .clicked()
-                {
-                    queued.push(Action::Transfer(slot, DropTarget::BoxTab(state.tab)));
-                }
-                if ui
-                    .add_enabled(
-                        doc.save.daycare().is_none(),
-                        egui::Button::new("Move ➡ daycare"),
-                    )
-                    .clicked()
-                {
-                    queued.push(Action::Transfer(slot, DropTarget::Slot(SlotId::Daycare)));
-                }
-                if ui.button("🗑 Delete").clicked() {
-                    queued.push(Action::Delete(slot));
-                }
+    // Two deliberate rows, each of which fits the center column at its
+    // minimum width: a single row overflows under the detail panel at
+    // narrow sizes (a widget that merely *starts* inside a wrapped row
+    // still sticks out past the edge).
+    ui.horizontal_wrapped(|ui| match state.selected {
+        Some(slot @ SlotId::Party(_)) => {
+            if ui
+                .add_enabled(!box_full, egui::Button::new("Deposit ➡ this box"))
+                .clicked()
+            {
+                queued.push(Action::Transfer(slot, DropTarget::BoxTab(state.tab)));
             }
-            Some(slot @ SlotId::Box { .. }) => {
-                if ui
-                    .add_enabled(!party_full, egui::Button::new("Withdraw ➡ party"))
-                    .clicked()
-                {
-                    queued.push(Action::Transfer(slot, DropTarget::Party));
-                }
-                if ui.button("🗑 Delete").clicked() {
-                    queued.push(Action::Delete(slot));
-                }
+            if ui
+                .add_enabled(
+                    doc.save.daycare().is_none(),
+                    egui::Button::new("Move ➡ daycare"),
+                )
+                .clicked()
+            {
+                queued.push(Action::Transfer(slot, DropTarget::Slot(SlotId::Daycare)));
             }
-            Some(SlotId::Daycare) => {
-                if ui
-                    .add_enabled(!party_full, egui::Button::new("Take ➡ party"))
-                    .clicked()
-                {
-                    queued.push(Action::Transfer(SlotId::Daycare, DropTarget::Party));
-                }
-                if ui.button("🗑 Clear daycare").clicked() {
-                    queued.push(Action::Delete(SlotId::Daycare));
-                }
-            }
-            None => {
-                ui.weak("Select a slot, or drag Pokémon between the party and boxes.");
+            if ui.button("🗑 Delete").clicked() {
+                queued.push(Action::Delete(slot));
             }
         }
-
-        ui.separator();
+        Some(slot @ SlotId::Box { .. }) => {
+            if ui
+                .add_enabled(!party_full, egui::Button::new("Withdraw ➡ party"))
+                .clicked()
+            {
+                queued.push(Action::Transfer(slot, DropTarget::Party));
+            }
+            if ui.button("🗑 Delete").clicked() {
+                queued.push(Action::Delete(slot));
+            }
+        }
+        Some(SlotId::Daycare) => {
+            if ui
+                .add_enabled(!party_full, egui::Button::new("Take ➡ party"))
+                .clicked()
+            {
+                queued.push(Action::Transfer(SlotId::Daycare, DropTarget::Party));
+            }
+            if ui.button("🗑 Clear daycare").clicked() {
+                queued.push(Action::Delete(SlotId::Daycare));
+            }
+        }
+        None => {
+            ui.weak("Select a slot or drag to move Pokémon.");
+        }
+    });
+    ui.horizontal_wrapped(|ui| {
         if let Some(picked) = widgets::species_combo(ui, "add_species", state.add_species) {
             state.add_species = picked;
         }
