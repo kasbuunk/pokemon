@@ -8,6 +8,8 @@ pub mod detail;
 pub mod editor;
 pub mod slots;
 pub mod transfer;
+#[cfg(test)]
+mod widget_tests;
 
 use pksave::gen1::offsets;
 use pksave::gen1::pokemon::{MonView, PartyMon};
