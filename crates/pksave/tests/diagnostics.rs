@@ -439,3 +439,99 @@ fn multi_broken_save_snapshot() {
         .collect();
     insta::assert_snapshot!(rendered.join("\n"));
 }
+
+#[test]
+fn savegame_trait_object_delegates_to_the_inherent_impls() {
+    // Mutation hardening (issue #33): the `SaveGame` impl is a thin
+    // delegation layer no other test calls through.
+    use pksave::SaveGame;
+    let save = broken(false, |bytes| bytes[offsets::MAIN_DATA] ^= 0xFF);
+    let dyn_save: &dyn SaveGame = &save;
+    assert_eq!(dyn_save.game_label(), save.game_label());
+    assert!(!dyn_save.game_label().is_empty());
+    assert_eq!(dyn_save.to_bytes(), save.to_bytes());
+    let diags = dyn_save.diagnostics();
+    assert_eq!(diags, save.diagnostics());
+    assert!(!diags.is_empty(), "the broken checksum must be reported");
+}
+
+// ---- mutation hardening (issue #33): exact boundaries of the
+// count/sentinel/level checks ----
+
+#[test]
+fn full_party_and_full_box_counts_are_legal() {
+    let mut save = SaveFile::new_empty(GameVariant::RedBlue);
+    let mut party_mon = [0u8; offsets::PARTY_MON_SIZE];
+    {
+        let mut mon = PartyMonMut::new(&mut party_mon);
+        mon.set_species(DEX_TO_INDEX[1]);
+        mon.set_level_coherent(5);
+    }
+    for _ in 0..offsets::PARTY_CAPACITY {
+        save.party_mut()
+            .add(&party_mon, "RED", "BULBA")
+            .expect("room");
+    }
+    let mut box_mon = [0u8; offsets::BOX_MON_SIZE];
+    {
+        let mut mon = BoxMonMut::new(&mut box_mon);
+        mon.set_species(DEX_TO_INDEX[1]);
+        mon.set_level_coherent(5);
+    }
+    save.set_current_box_number(1);
+    for _ in 0..offsets::MONS_PER_BOX {
+        save.box_mut(0).add(&box_mon, "RED", "BULBA").expect("room");
+    }
+    let diags = save.diagnostics();
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code != "W-PARTY-COUNT" && d.code != "W-BOX-COUNT"),
+        "counts at exactly capacity are legal: {diags:?}"
+    );
+}
+
+#[test]
+fn box_sentinel_span_names_the_terminator_byte() {
+    let mut save = SaveFile::new_empty(GameVariant::RedBlue);
+    save.set_current_box_number(1);
+    let mut box_mon = [0u8; offsets::BOX_MON_SIZE];
+    {
+        let mut mon = BoxMonMut::new(&mut box_mon);
+        mon.set_species(DEX_TO_INDEX[1]);
+        mon.set_level_coherent(5);
+    }
+    for _ in 0..3 {
+        save.box_mut(0).add(&box_mon, "RED", "BULBA").expect("room");
+    }
+    let sentinel_at = offsets::box_offset(0) + 1 + 3;
+    save.set_byte(sentinel_at, 0x00).expect("in range");
+    let diags = save.diagnostics();
+    let diag = diags
+        .iter()
+        .find(|d| d.code == "W-BOX-SENTINEL")
+        .expect("sentinel mismatch flagged");
+    assert_eq!(diag.span, Some(sentinel_at..sentinel_at + 1));
+}
+
+#[test]
+fn level_100_still_gets_the_exp_mismatch_check() {
+    // Exactly 100 is a legal level; only >100 is exempt from the
+    // level/exp coherence check.
+    let mut save = SaveFile::new_empty(GameVariant::RedBlue);
+    save.set_current_box_number(1);
+    let mut box_mon = [0u8; offsets::BOX_MON_SIZE];
+    {
+        let mut mon = BoxMonMut::new(&mut box_mon);
+        mon.set_species(DEX_TO_INDEX[1]);
+        mon.set_level_coherent(50);
+        mon.set_box_level(100);
+    }
+    save.box_mut(0).add(&box_mon, "RED", "BULBA").expect("room");
+    assert!(
+        save.diagnostics()
+            .iter()
+            .any(|d| d.code == "W-LEVEL-EXP-MISMATCH"),
+        "a level-100 byte disagreeing with exp must be flagged"
+    );
+}

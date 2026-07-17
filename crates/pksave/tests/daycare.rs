@@ -119,3 +119,17 @@ fn nonzero_in_use_byte_counts_as_occupied() {
     let save = SaveFile::from_bytes(bytes).expect("length is valid");
     assert!(save.daycare().is_some());
 }
+
+#[test]
+fn daycare_mut_reads_names_back() {
+    // Mutation hardening (issue #33): the DaycareMut name getters are a
+    // separate delegation from the view's.
+    let mut save = SaveFile::new_empty(GameVariant::RedBlue);
+    let mut mon = [0u8; offsets::BOX_MON_SIZE];
+    BoxMonMut::new(&mut mon).set_species(DEX_TO_INDEX[113]);
+    save.set_daycare(Some((&mon, "OTIS", "EGGSY")))
+        .expect("names encode");
+    let daycare = save.daycare_mut().expect("occupied");
+    assert_eq!(daycare.ot_name(), "OTIS");
+    assert_eq!(daycare.nickname(), "EGGSY");
+}

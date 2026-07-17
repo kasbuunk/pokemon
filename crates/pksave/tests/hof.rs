@@ -152,3 +152,16 @@ fn six_slots_per_team() {
     }
     assert_eq!(team.len(), 6);
 }
+
+#[test]
+fn team_is_empty_reports_both_polarities_via_view_and_mut() {
+    // Mutation hardening (issue #33).
+    let mut save = SaveFile::new_empty(GameVariant::RedBlue);
+    assert!(save.hof_team(0).is_empty());
+    assert!(save.hof_team_mut(0).is_empty());
+    save.hof_team_mut(0)
+        .set_mon(0, DEX_TO_INDEX[151], 70, "MEW")
+        .expect("fits");
+    assert!(!save.hof_team(0).is_empty());
+    assert!(!save.hof_team_mut(0).is_empty());
+}

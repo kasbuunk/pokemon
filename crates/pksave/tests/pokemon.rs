@@ -690,3 +690,12 @@ proptest! {
         prop_assert_eq!(restored, original);
     }
 }
+
+#[test]
+fn moves_read_back_in_slot_order() {
+    // Mutation hardening (issue #33): distinct move ids pin the per-slot
+    // offset arithmetic of the reader.
+    let mut bytes = [0u8; PARTY_MON_SIZE];
+    PartyMonMut::new(&mut bytes).set_moves([10, 20, 30, 40]);
+    assert_eq!(PartyMonView::new(&bytes).moves(), [10, 20, 30, 40]);
+}

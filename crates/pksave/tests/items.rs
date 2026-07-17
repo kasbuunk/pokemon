@@ -286,3 +286,60 @@ fn diagnostics_spans_point_into_the_list_region() {
         Some(offsets::BAG_ITEMS + 2..offsets::BAG_ITEMS + 3)
     );
 }
+
+// ---- mutation hardening (issue #33) ----
+
+#[test]
+fn is_empty_and_get_report_through_the_mut_view_too() {
+    let mut save = blank();
+    assert!(save.bag_items().is_empty());
+    assert!(save.bag_items_mut().is_empty());
+    save.bag_items_mut().add(POTION, 2).expect("room");
+    save.bag_items_mut().add(0x0A, 95).expect("room");
+    assert!(!save.bag_items().is_empty());
+    let list = save.bag_items_mut();
+    assert!(!list.is_empty());
+    assert_eq!(list.get(0), Some((POTION, 2)));
+    assert_eq!(list.get(1), Some((0x0A, 95)));
+    assert_eq!(list.get(2), None, "past the end");
+}
+
+#[test]
+fn spec_regions_span_count_pairs_and_terminator() {
+    // count byte + 2*capacity pair bytes + terminator, as literal
+    // offsets so the arithmetic itself is pinned.
+    assert_eq!(BAG_LIST.region(), 0x25C9..0x25C9 + 1 + 2 * 20 + 1);
+    assert_eq!(PC_LIST.region(), 0x27E6..0x27E6 + 1 + 2 * 50 + 1);
+}
+
+#[test]
+fn count_equal_to_capacity_is_not_flagged() {
+    let mut save = blank();
+    for _ in 0..offsets::BAG_CAPACITY {
+        save.bag_items_mut().add(POTION, 1).expect("room");
+    }
+    assert!(
+        save.diagnostics().iter().all(|d| d.code != "W-ITEMS-COUNT"),
+        "a full list is legal"
+    );
+}
+
+#[test]
+fn unknown_item_id_span_points_at_that_entry() {
+    let mut save = blank();
+    save.bag_items_mut().add(POTION, 1).expect("room");
+    save.bag_items_mut().add(POTION, 1).expect("room");
+    // Corrupt entry 1's id to 0x00 (no item name) through the raw path.
+    save.set_byte(offsets::BAG_ITEMS + 2, 0x00)
+        .expect("in range");
+    let diags = save.diagnostics();
+    let diag = diags
+        .iter()
+        .find(|d| d.code == "W-ITEMS-UNKNOWN-ID")
+        .expect("unknown id flagged");
+    assert_eq!(
+        diag.span,
+        Some(offsets::BAG_ITEMS + 2..offsets::BAG_ITEMS + 3),
+        "span names entry 1's id byte"
+    );
+}

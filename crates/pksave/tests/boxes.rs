@@ -711,3 +711,197 @@ impl TestPoke for SaveFile {
         self.mark_edited();
     }
 }
+
+// ---- mutation hardening (issue #33): pin the layout arithmetic against
+// the raw byte image, so offset math cannot silently self-cancel through
+// symmetric read/write paths.
+
+#[test]
+fn box_edits_at_high_slots_land_at_the_documented_offsets() {
+    let mut save = SaveFile::new_empty(GameVariant::RedBlue);
+    save.set_current_box_number(1); // box 0 routes to its bank slot
+    {
+        let mut b = save.box_mut(0);
+        for dex in [1, 4, 7] {
+            b.add(&make_box_mon(dex, 12), "RED", "NICK").expect("room");
+        }
+        b.set_ot_name(2, "BLUE").expect("encodes");
+        b.set_nickname(2, "SQUIRT").expect("encodes");
+        b.set_species(1, 0x99);
+    }
+    let bytes = save.to_bytes();
+    let base = offsets::box_offset(0);
+    assert_eq!(bytes[base + SPECIES_LIST + 1], 0x99, "species list entry 1");
+    assert_eq!(
+        &bytes[base + OT_NAMES + 2 * offsets::NAME_LEN..][..offsets::NAME_LEN],
+        &pksave::gen1::text::encode("BLUE", offsets::NAME_LEN).expect("encodes")[..],
+        "slot 2 OT name bytes"
+    );
+    assert_eq!(
+        &bytes[base + NICKNAMES + 2 * offsets::NAME_LEN..][..offsets::NAME_LEN],
+        &pksave::gen1::text::encode("SQUIRT", offsets::NAME_LEN).expect("encodes")[..],
+        "slot 2 nickname bytes"
+    );
+    assert_eq!(
+        bytes[base + MONS + 2 * offsets::BOX_MON_SIZE],
+        DEX_TO_INDEX[7],
+        "slot 2 mon record species byte"
+    );
+}
+
+#[test]
+fn box_remove_middle_slot_shifts_every_array() {
+    let mut save = SaveFile::new_empty(GameVariant::RedBlue);
+    save.set_current_box_number(1);
+    {
+        let mut b = save.box_mut(0);
+        for (dex, nick) in [(1, "N1"), (4, "N2"), (7, "N3"), (25, "N4")] {
+            b.add(&make_box_mon(dex, 9), &format!("O{nick}"), nick)
+                .expect("room");
+        }
+        b.remove(1);
+    }
+    let view = save.box_(0);
+    assert_eq!(view.len(), 3);
+    assert_eq!(
+        view.species_list(),
+        &[DEX_TO_INDEX[1], DEX_TO_INDEX[7], DEX_TO_INDEX[25]]
+    );
+    assert_eq!(
+        [view.nickname(0), view.nickname(1), view.nickname(2)],
+        ["N1".to_owned(), "N3".to_owned(), "N4".to_owned()]
+    );
+    assert_eq!(view.ot_name(1), "ON3");
+    assert_eq!(view.mon(1).species(), DEX_TO_INDEX[7]);
+    // The vacated trailing slot is zero-filled in all three arrays.
+    let bytes = save.to_bytes();
+    let base = offsets::box_offset(0);
+    assert!(
+        bytes[base + MONS + 3 * offsets::BOX_MON_SIZE..][..offsets::BOX_MON_SIZE]
+            .iter()
+            .all(|&b| b == 0)
+    );
+    assert!(
+        bytes[base + OT_NAMES + 3 * offsets::NAME_LEN..][..offsets::NAME_LEN]
+            .iter()
+            .all(|&b| b == 0)
+    );
+    assert!(
+        bytes[base + NICKNAMES + 3 * offsets::NAME_LEN..][..offsets::NAME_LEN]
+            .iter()
+            .all(|&b| b == 0)
+    );
+}
+
+#[test]
+fn box_swap_moves_all_four_arrays_together() {
+    let mut save = SaveFile::new_empty(GameVariant::RedBlue);
+    save.set_current_box_number(1);
+    {
+        let mut b = save.box_mut(0);
+        for (dex, nick) in [(1, "A"), (4, "B"), (7, "C")] {
+            b.add(&make_box_mon(dex, 9), &format!("O{nick}"), nick)
+                .expect("room");
+        }
+        b.swap(0, 2);
+    }
+    let view = save.box_(0);
+    assert_eq!(
+        view.species_list(),
+        &[DEX_TO_INDEX[7], DEX_TO_INDEX[4], DEX_TO_INDEX[1]]
+    );
+    assert_eq!(view.nickname(0), "C");
+    assert_eq!(view.nickname(2), "A");
+    assert_eq!(view.ot_name(0), "OC");
+    assert_eq!(view.mon(0).species(), DEX_TO_INDEX[7]);
+    assert_eq!(view.mon(2).species(), DEX_TO_INDEX[1]);
+}
+
+#[test]
+fn withdraw_appends_at_the_documented_party_offsets() {
+    // Party-block layout (docs/FORMAT.md): count 0x000, species list
+    // 0x001, mons 0x008, OT names 0x110, nicknames 0x152.
+    const P_MONS: usize = 0x008;
+    const P_OT_NAMES: usize = 0x110;
+    const P_NICKNAMES: usize = 0x152;
+
+    let mut save = SaveFile::new_empty(GameVariant::RedBlue);
+    save.set_current_box_number(1);
+    for (dex, nick) in [(1, "P1"), (4, "P2")] {
+        save.party_mut()
+            .add(&make_party_mon(dex, 8), "ASH", nick)
+            .expect("room");
+    }
+    save.box_mut(0)
+        .add(&make_box_mon(7, 31), "OTIS", "BOXY")
+        .expect("room");
+    save.withdraw(0, 0).expect("party has room");
+
+    let party = save.party();
+    assert_eq!(party.len(), 3);
+    assert_eq!(party.nickname(2), "BOXY");
+    assert_eq!(party.ot_name(2), "OTIS");
+    assert_eq!(party.mon(2).species(), DEX_TO_INDEX[7]);
+    assert_eq!(party.mon(2).level(), 31, "level derives from exp");
+
+    let bytes = save.to_bytes();
+    let base = offsets::PARTY;
+    assert_eq!(bytes[base], 3, "party count byte");
+    assert_eq!(bytes[base + 1 + 2], DEX_TO_INDEX[7], "species list entry 2");
+    assert_eq!(bytes[base + 1 + 3], 0xFF, "species list sentinel");
+    assert_eq!(
+        bytes[base + P_MONS + 2 * offsets::PARTY_MON_SIZE],
+        DEX_TO_INDEX[7],
+        "mon record 2 species byte"
+    );
+    assert_eq!(
+        &bytes[base + P_OT_NAMES + 2 * offsets::NAME_LEN..][..offsets::NAME_LEN],
+        &pksave::gen1::text::encode("OTIS", offsets::NAME_LEN).expect("encodes")[..],
+        "OT name 2 bytes"
+    );
+    assert_eq!(
+        &bytes[base + P_NICKNAMES + 2 * offsets::NAME_LEN..][..offsets::NAME_LEN],
+        &pksave::gen1::text::encode("BOXY", offsets::NAME_LEN).expect("encodes")[..],
+        "nickname 2 bytes"
+    );
+}
+
+#[test]
+fn swap_party_box_exchanges_records_names_and_nicknames() {
+    let mut save = SaveFile::new_empty(GameVariant::RedBlue);
+    save.set_current_box_number(1);
+    for (dex, nick) in [(1, "P1"), (4, "P2"), (7, "P3")] {
+        save.party_mut()
+            .add(&make_party_mon(dex, 8), "ASH", nick)
+            .expect("room");
+    }
+    for (dex, nick) in [(25, "B1"), (39, "B2"), (52, "B3")] {
+        save.box_mut(0)
+            .add(&make_box_mon(dex, 21), "GARY", nick)
+            .expect("room");
+    }
+    save.swap_party_box(2, 0, 2).expect("both occupied");
+
+    let party = save.party();
+    assert_eq!(party.mon(2).species(), DEX_TO_INDEX[52]);
+    assert_eq!(party.nickname(2), "B3");
+    assert_eq!(party.ot_name(2), "GARY");
+    assert_eq!(party.mon(2).level(), 21, "withdrawn level derives from exp");
+    let boxv = save.box_(0);
+    assert_eq!(boxv.mon(2).species(), DEX_TO_INDEX[7]);
+    assert_eq!(boxv.nickname(2), "P3");
+    assert_eq!(boxv.ot_name(2), "ASH");
+}
+
+#[test]
+fn box_is_empty_reports_both_polarities_via_view_and_mut() {
+    let mut save = SaveFile::new_empty(GameVariant::RedBlue);
+    save.set_current_box_number(1);
+    assert!(save.box_(0).is_empty());
+    assert!(save.box_mut(0).is_empty());
+    save.box_mut(0)
+        .add(&make_box_mon(1, 5), "RED", "BULBA")
+        .expect("room");
+    assert!(!save.box_(0).is_empty());
+    assert!(!save.box_mut(0).is_empty());
+}

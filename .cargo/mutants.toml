@@ -1,0 +1,23 @@
+# cargo-mutants configuration (issue #33, full-crate pass 2026-07-17:
+# 1555 mutants, 89 missed -> tests added for all killable ones).
+#
+# Excluded below: provably-equivalent `|`->`^` mutants. In every listed
+# function the `|` operands have disjoint set bits (nibble/bit-field
+# packs or shifted whole bytes), where OR and XOR are the same function
+# — the #5-precedent equivalence class. Reviewed per function, not
+# blanket: every `|` in each listed function is a disjoint-operand pack.
+#
+# Known-equivalent but NOT excluded (kept visible on purpose, expect
+# them as "missed"): five `+ with -` mutants in validate.rs (party,
+# boxes, level_exp_coherence x2, text_terminators) that add the layout
+# constant COUNT == 0, where +0 == -0. A function-scoped exclude would
+# also hide future real span-arithmetic regressions in those functions.
+exclude_re = [
+    'replace \| with \^ in encode',                            # bcd: (hi<<4) | lo, lo < 16
+    'replace \| with \^ in SaveFile::set_current_box_number',  # (byte & 0x80) | n, n < 12
+    'replace \| with \^ in MonView::exp',                      # b0<<16 | b1<<8 | b2
+    'replace \| with \^ in Dvs::pack',                         # (x&0xF)<<4 | (y&0xF)
+    'replace \| with \^ in Dvs::hp_dv',                        # four distinct single bits
+    'replace \| with \^ in compose_pp',                        # (ups&3)<<6 | (pp&0x3F)
+    'replace \| with \^ in SaveFile::set_text_speed',          # (byte & 0xF0) | speed, speed < 8
+]
