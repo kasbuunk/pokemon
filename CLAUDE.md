@@ -15,13 +15,14 @@ Changes go to `main` without waiting for human review, CI-gated:
 2. Direct pushes to `main` are also sanctioned for trivial changes
    (docs, comments) where CI adds nothing.
 
-Never merge with failing or pending checks — and don't assume auto-merge
-enforces that: on 2026-07-16 armed PRs merged within a minute, before
-any CI job finished, *even though* the owner confirmed the branch
-protection lists the named required checks. Likely admin bypass — the
-rules don't bind merges triggered by the repo owner (issue #27). Until
-a PR is observed *waiting* for checks, verify green yourself before or
-right after the merge.
+Never merge with failing or pending checks. Auto-merge genuinely gates
+on them now: after the owner enabled "Do not allow bypassing the above
+settings" (issue #27, 2026-07-17), PR #35 sat `blocked` after arming and
+merged 3 seconds after the last required check passed. Two calibration
+notes: CI completes in ~40–60 s with warm caches (the pokered ROM build
+is cached), so a fast merge is not by itself evidence of bypass; and a
+quick post-merge glance at the merged commit's checks stays cheap
+insurance.
 
 ## Working with the owner
 
