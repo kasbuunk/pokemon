@@ -48,7 +48,13 @@ pub enum Action {
 }
 
 /// Paint one cell: selection-aware frame plus up to two lines of text.
-/// Returns the click response for the whole cell.
+/// Returns the click response for the whole cell. Occupied cells sense
+/// clicks *and* drags on the same widget: egui then defers the
+/// click-vs-drag decision until the pointer actually moves, so plain
+/// clicks and right-clicks (select, context menu) are never swallowed
+/// by an instantly starting drag. A separate drag-only handle (as
+/// `dnd_drag_source` adds) would grab the pointer on the press frame
+/// and break both.
 fn draw_cell(
     ui: &mut egui::Ui,
     size: egui::Vec2,
@@ -56,7 +62,12 @@ fn draw_cell(
     slot_no: usize,
     selected: bool,
 ) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let sense = if info.is_some() {
+        egui::Sense::click_and_drag()
+    } else {
+        egui::Sense::click()
+    };
+    let (rect, response) = ui.allocate_exact_size(size, sense);
     if !ui.is_rect_visible(rect) {
         return response;
     }
@@ -194,26 +205,73 @@ pub fn slot_cell(
         SlotId::Daycare => 1,
     };
 
-    let response = if let Some(info) = &info {
-        let inner = ui.dnd_drag_source(id, MonDragPayload(slot), |ui| {
-            draw_cell(ui, size, Some(info), slot_no, *selected == Some(slot))
-        });
-        // Union of the drag handle and the inner click response: clicks,
-        // context menu and hover all keep working on a drag source.
-        inner.inner | inner.response
-    } else {
-        draw_cell(ui, size, None, slot_no, false)
-    };
+    let response = draw_cell(
+        ui,
+        size,
+        info.as_ref(),
+        slot_no,
+        info.is_some() && *selected == Some(slot),
+    );
 
-    if response.clicked() && info.is_some() {
+    // Expose the cell to accessibility (and the widget tests).
+    let place = match slot {
+        SlotId::Party(i) => format!("party slot {}", i + 1),
+        SlotId::Box { box_n, index } => format!("box {} slot {}", box_n + 1, index + 1),
+        SlotId::Daycare => "daycare".to_owned(),
+    };
+    let label = match &info {
+        Some(info) => format!("{}, {place}", info.nickname),
+        None => format!("Empty {place}"),
+    };
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+
+    if let Some(info) = &info {
+        response.dnd_set_drag_payload(MonDragPayload(slot));
+        if response.dragged() {
+            drag_preview(ui, id, size, info);
+        } else if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        }
+    }
+
+    // Both click kinds select: the detail editor follows the slot the
+    // user is acting on, so right-click alone is enough to edit.
+    if (response.clicked() || response.secondary_clicked()) && info.is_some() {
         *selected = Some(slot);
     }
 
     if info.is_some() {
-        response.context_menu(|ui| context_menu(ui, doc, slot, queued));
+        response.context_menu(|ui| context_menu(ui, doc, slot, selected, queued));
     }
 
     handle_drop_target(ui, &response, doc, DropTarget::Slot(slot), queued);
+}
+
+/// A ghost of the dragged cell following the pointer, painted on its
+/// own tooltip-order layer; the in-place cell keeps rendering.
+fn drag_preview(ui: &egui::Ui, id: egui::Id, size: egui::Vec2, info: &SlotInfo) {
+    let Some(pos) = ui.ctx().pointer_interact_pos() else {
+        return;
+    };
+    let painter = ui
+        .ctx()
+        .layer_painter(egui::LayerId::new(egui::Order::Tooltip, id));
+    let rect = egui::Rect::from_center_size(pos, size);
+    let visuals = &ui.visuals().widgets.active;
+    painter.rect(
+        rect,
+        3.0,
+        visuals.bg_fill.gamma_multiply(0.85),
+        visuals.bg_stroke,
+        egui::StrokeKind::Inside,
+    );
+    painter.text(
+        rect.shrink(4.0).left_top(),
+        egui::Align2::LEFT_TOP,
+        &info.nickname,
+        egui::TextStyle::Body.resolve(ui.style()),
+        ui.visuals().text_color(),
+    );
 }
 
 /// Shared drop-target behavior for cells and tabs: highlight a valid
@@ -247,7 +305,17 @@ pub fn handle_drop_target(
 }
 
 /// Right-click actions for an occupied slot.
-fn context_menu(ui: &mut egui::Ui, doc: &Doc, slot: SlotId, queued: &mut Vec<Action>) {
+fn context_menu(
+    ui: &mut egui::Ui,
+    doc: &Doc,
+    slot: SlotId,
+    selected: &mut Option<SlotId>,
+    queued: &mut Vec<Action>,
+) {
+    if ui.button("✏ Edit").clicked() {
+        *selected = Some(slot);
+        ui.close();
+    }
     let party_full = doc.save.party().len() >= offsets::PARTY_CAPACITY;
     match slot {
         SlotId::Party(_) => {
