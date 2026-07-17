@@ -46,3 +46,7 @@ jobs:
       contents: write
     with:
       tag: ${{ needs.read-version.outputs.tag }}
+    # Called workflows see no caller secrets unless passed on; without
+    # this the Homebrew bump step finds HOMEBREW_TAP_TOKEN empty and
+    # skips (v0.1.1 release run, issue #26).
+    secrets: inherit
