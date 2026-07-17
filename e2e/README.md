@@ -53,3 +53,15 @@ of reloading it from ROM. A zeroed block boots but crashes (`rst $38` wild
 jump) about one second in. `SaveFile::new_empty` now bakes in the genuine
 NEW GAME spawn block (`crates/pksave/src/gen1/engine_state.rs`), captured
 from a scripted fresh game in this very harness.
+
+## Scripted PC withdrawal
+
+`test_pc_withdrawal.py` goes beyond booting: it plays the game. Using the
+`boxmon.sav` fixture (CHARMANDER stored with a stale box level byte of 80
+but experience for level 50), it redirects the bedroom staircase's cached
+warp entry to a Pokémon Center, walks the player to the PC through real
+collision/NPC traffic (coordinate-feedback steps, not blind input replay),
+drives BILL'S PC → WITHDRAW MON → slot 2 synchronized on symbol hooks, and
+asserts the withdrawn party mon comes out at level 50 — proving in-engine
+that withdrawal levels derive from experience, never the box level byte
+(the editor's exp-authoritative model, issue #29).
