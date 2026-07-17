@@ -17,9 +17,11 @@ Changes go to `main` without waiting for human review, CI-gated:
 
 Never merge with failing or pending checks — and don't assume auto-merge
 enforces that: on 2026-07-16 armed PRs merged within a minute, before
-any CI job finished, meaning required status checks were not active on
-the `main` ruleset. Until a PR is observed *waiting* for checks, verify
-green yourself before or right after the merge.
+any CI job finished, *even though* the owner confirmed the branch
+protection lists the named required checks. Likely admin bypass — the
+rules don't bind merges triggered by the repo owner (issue #27). Until
+a PR is observed *waiting* for checks, verify green yourself before or
+right after the merge.
 
 ## Working with the owner
 
