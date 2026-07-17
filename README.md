@@ -93,7 +93,10 @@ surprise. This editor sets experience together with the level and shows an
 Grab the latest build from
 [Releases](https://github.com/kasbuunk/pokemon/releases):
 
-- **macOS** (universal): download `Pokemon-SRM-Editor-macos-universal.zip`,
+- **macOS** (universal): with [Homebrew](https://brew.sh), one command —
+  `brew install --cask --no-quarantine kasbuunk/tap/pokemon-srm-editor`
+  (the cask lives in [kasbuunk/homebrew-tap](https://github.com/kasbuunk/homebrew-tap)).
+  Or download `Pokemon-SRM-Editor-macos-universal.zip`,
   unzip, drag `Pokémon SRM Editor.app` to Applications. The app is open source
   but **not notarized by Apple** (that requires a paid developer account), so
   the first launch needs one extra step: **right-click the app → Open → Open**.

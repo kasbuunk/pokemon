@@ -9,7 +9,7 @@ How Pokémon SRM Editor reaches users, and what each channel costs.
 | Web app (GitHub Pages) | free | live — deployed from `main` by `.github/workflows/pages.yml` |
 | GitHub Releases (macOS/Windows/Linux) | free | tag-triggered by `.github/workflows/release.yml` |
 | Apple notarization (Developer ID) | $99/year | documented below, not set up |
-| Homebrew cask | free | optional follow-up, see below |
+| Homebrew cask ([kasbuunk/homebrew-tap](https://github.com/kasbuunk/homebrew-tap)) | free | live — manual version bumps, see below |
 
 ## Cutting a release
 
@@ -75,18 +75,20 @@ first launch of a downloaded copy until the user right-clicks → Open (or runs
 This is the only distribution step that costs money; everything else here is
 free.
 
-## Optional: Homebrew cask
+## Homebrew cask
 
-A personal tap makes installs one command and is free:
+The personal tap [kasbuunk/homebrew-tap](https://github.com/kasbuunk/homebrew-tap)
+holds `Casks/pokemon-srm-editor.rb`, pointing at the release zip. Users
+install with
+`brew install --cask --no-quarantine kasbuunk/tap/pokemon-srm-editor`
+(`--no-quarantine` skips Gatekeeper for the unsigned app).
 
-1. Create a `kasbuunk/homebrew-tap` repository with
-   `Casks/pokemon-srm-editor.rb` pointing at the release zip (version, url,
-   `sha256` from `SHA256SUMS.txt`, `app "Pokémon SRM Editor.app"`).
-2. Users install with
-   `brew install --cask --no-quarantine kasbuunk/tap/pokemon-srm-editor`
-   (`--no-quarantine` skips Gatekeeper for the unsigned app — document it).
-3. Automate later: a release-workflow step that opens a PR against the tap
-   with the new version + hash.
+After each release, bump the cask: update `version` and `sha256` (the
+macOS zip's line in the release's `SHA256SUMS.txt`) in the tap repo. The
+cask's `livecheck` follows the latest GitHub release, so
+`brew livecheck pokemon-srm-editor` reports when the cask lags. Automate
+later: a release-workflow step that opens a PR against the tap with the
+new version + hash (issue #20 tracks this as an optional follow-up).
 
 ## Manual, outside-the-repo checklist (one-time)
 
@@ -103,4 +105,4 @@ A personal tap makes installs one command and is free:
    channel).
 4. Push the first tag (`v0.1.0`) once the release workflow is on `main`.
 5. Optional: custom domain (makes robots.txt effective and the URL
-   memorable); `kasbuunk/homebrew-tap` for the cask.
+   memorable). The `kasbuunk/homebrew-tap` repo for the cask exists.
