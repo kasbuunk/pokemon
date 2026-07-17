@@ -23,6 +23,10 @@ _SCRATCHPAD = Path(
 #: save was loaded (pokered engine/menus/main_menu.asm). 1 = no/invalid save.
 SAVE_STATUS_VALID = 2
 
+#: `wSpritePlayerStateData1FacingDirection` values (pokered
+#: constants/sprite_data_constants.asm: SPRITE_FACING_*).
+FACING = {"down": 0x0, "up": 0x4, "left": 0x8, "right": 0xC}
+
 
 def rom_path():
     return Path(os.environ.get("POKERED_ROM", _SCRATCHPAD / "pokered.gbc"))
@@ -90,6 +94,20 @@ class Gen1Game:
         start = addr + offset
         return bytes(self.pyboy.memory[start : start + length])
 
+    def write(self, label, data, offset=0):
+        """Write `data` bytes into memory at symbol `label` + `offset`."""
+        _, addr = self.symbols[label]
+        for i, byte in enumerate(data):
+            self.pyboy.memory[addr + offset + i] = byte
+
+    def hook(self, label):
+        """Register a PC hook on a ROM symbol; returns the list that gets
+        a `True` appended every time the routine starts executing."""
+        fired = []
+        bank, addr = self.symbols[label]
+        self.pyboy.hook_register(bank, addr, lambda ctx: ctx.append(True), fired)
+        return fired
+
     def screenshot(self, path):
         """Render one frame and save a PNG (for failure artifacts)."""
         Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -106,9 +124,10 @@ class Gen1Game:
         overworld map is loaded. A save the engine considers corrupt
         never offers CONTINUE, so the hook never fires and we time out.
         """
-        entered = []
-        bank, addr = self.symbols["EnterMap"]
-        self.pyboy.hook_register(bank, addr, lambda ctx: ctx.append(True), entered)
+        entered = self.hook("EnterMap")
+        # Kept for callers that need to synchronize on later map loads
+        # (every warp executes EnterMap again).
+        self.entermap_fired = entered
 
         frame = 0
         while not entered:
@@ -150,3 +169,74 @@ class Gen1Game:
         after = self.read("wPlayTimeMinutes", 0, 3)
         lcd_on = self.pyboy.memory[0xFF40] & 0x80 != 0
         return lcd_on and after != before
+
+    # -- overworld / menu scripting --------------------------------------
+
+    def player_pos(self):
+        """(x, y) of the player in map tiles."""
+        return self.read("wXCoord")[0], self.read("wYCoord")[0]
+
+    def wait_for(self, fired, count=1, frame_budget=900, press=None, every=30, what=""):
+        """Tick until the hook list `fired` holds >= `count` entries,
+        optionally tapping `press` every `every` frames (menus and text
+        boxes poll for fresh presses, so short taps with gaps register
+        reliably and never double-fire)."""
+        frame = 0
+        while len(fired) < count:
+            if frame >= frame_budget:
+                raise BootTimeout(
+                    f"timed out after {frame_budget} frames waiting for {what}"
+                )
+            if press is not None and frame % every == 0:
+                self.pyboy.button(press, 6)
+            self.pyboy.tick(1, False)
+            frame += 1
+
+    def walk_to(self, x, y, frame_budget=6000, prefer="y", stop=None):
+        """Walk the player to tile (x, y) by coordinate feedback: press
+        toward the target one step at a time and re-read the position, so
+        a step swallowed by a collision (furniture, a wandering NPC) is
+        simply retried. After a few blocked steps the axis order flips to
+        route around static obstacles. `stop` aborts early (e.g. when a
+        warp fired and the coordinates now belong to another map)."""
+        stuck = 0
+        while frame_budget > 0:
+            if stop is not None and stop():
+                return
+            cur = self.player_pos()
+            if cur == (x, y):
+                return
+            moves = []
+            if cur[1] != y:
+                moves.append("up" if y < cur[1] else "down")
+            if cur[0] != x:
+                moves.append("left" if x < cur[0] else "right")
+            if prefer == "x":
+                moves.reverse()
+            if stuck >= 5 and len(moves) > 1:
+                moves.reverse()
+            # A held direction moves one tile per 16 frames; 18 held + a
+            # short settle covers turn-and-step reliably.
+            self.pyboy.button(moves[0], 18)
+            self.run_frames(24)
+            frame_budget -= 24
+            stuck = stuck + 1 if self.player_pos() == cur else 0
+        raise BootTimeout(f"could not walk to ({x}, {y}): stuck at {self.player_pos()}")
+
+    def face(self, direction, frame_budget=240):
+        """Face `direction` without leaving the current tile. Gen 1 has no
+        turn-in-place input: a press always attempts a step, so this only
+        terminates when the step is blocked (facing changes, coordinates
+        do not) — use it against walls/furniture only."""
+        want = FACING[direction]
+        start = self.player_pos()
+        while frame_budget > 0:
+            if (
+                self.read("wSpritePlayerStateData1FacingDirection")[0] == want
+                and self.player_pos() == start
+            ):
+                return
+            self.pyboy.button(direction, 4)
+            self.run_frames(20)
+            frame_budget -= 20
+        raise BootTimeout(f"could not face {direction} at {start}")
