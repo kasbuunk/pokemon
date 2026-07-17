@@ -2587,4 +2587,56 @@ mod tests {
             "nothing written to disk by the restore"
         );
     }
+
+    /// Widget-level guard test (issue #32): the unsaved-changes modal is
+    /// driven with real clicks through `egui_kittest`, over the full
+    /// `eframe::App` update loop.
+    #[test]
+    fn dropped_file_guard_modal_click_through() {
+        use egui_kittest::kittest::Queryable as _;
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1100.0, 740.0))
+            .build_eframe(|_cc| App::new());
+        {
+            let app = harness.state_mut();
+            let mut doc = empty_doc();
+            doc.dirty = true; // unsaved edits: the guard must engage
+            app.doc = Some(doc);
+        }
+
+        let payload: std::sync::Arc<[u8]> =
+            SaveFile::new_empty(GameVariant::RedBlue).to_bytes().into();
+        let drop_file = |harness: &mut egui_kittest::Harness<'_, App>| {
+            harness.input_mut().dropped_files.push(egui::DroppedFile {
+                name: "dropped.sav".to_owned(),
+                bytes: Some(payload.clone()),
+                ..Default::default()
+            });
+            harness.run_steps(2);
+        };
+
+        // Cancel keeps the dirty document.
+        drop_file(&mut harness);
+        harness.get_by_label("Load the dropped file?");
+        harness.get_by_label("Cancel").click();
+        harness.run_steps(2);
+        {
+            let app = harness.state();
+            assert!(app.pending.is_none(), "modal resolved");
+            let doc = app.doc.as_ref().expect("document kept");
+            assert!(doc.dirty, "unsaved edits survive a cancel");
+            assert_eq!(doc.file_name, "new.sav");
+        }
+
+        // Discard loads the dropped file.
+        drop_file(&mut harness);
+        harness.get_by_label("Discard changes").click();
+        harness.run_steps(2);
+        let app = harness.state();
+        assert!(app.pending.is_none(), "modal resolved");
+        let doc = app.doc.as_ref().expect("dropped file loaded");
+        assert!(!doc.dirty);
+        assert_eq!(doc.file_name, "dropped.sav");
+    }
 }
