@@ -7,3 +7,5 @@ e2e/fixtures/
 e2e/.venv/
 __pycache__/
 .DS_Store
+# cargo-mutants output (issue #33 runs)
+mutants*.out/

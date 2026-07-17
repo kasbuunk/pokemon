@@ -239,3 +239,39 @@ fn warp_to_touches_only_map_and_coord_bytes() {
         "pointer left untouched"
     );
 }
+
+// ---- mutation hardening (issue #33) ----
+
+#[test]
+fn missable_and_hidden_flags_read_both_polarities() {
+    let mut save = SaveFile::new_empty(GameVariant::RedBlue);
+    assert!(!save.missable_flag(3));
+    save.set_missable_flag(3, true);
+    assert!(save.missable_flag(3));
+    assert!(!save.hidden_item_flag(5));
+    save.set_hidden_item_flag(5, true);
+    assert!(save.hidden_item_flag(5));
+}
+
+#[test]
+fn bit_slice_mut_get_reads_live_bits() {
+    use pksave::gen1::flags::BitSliceMut;
+    let mut bytes = [0u8; 2];
+    let mut bits = BitSliceMut::new(&mut bytes);
+    assert!(!bits.get(3));
+    bits.set(3, true);
+    assert!(bits.get(3));
+    assert!(!bits.get(4));
+}
+
+#[test]
+fn block_coords_and_last_map_round_trip() {
+    let mut save = SaveFile::new_empty(GameVariant::RedBlue);
+    assert_eq!(save.last_map(), 0, "new save has no last map");
+    save.set_last_map(5);
+    assert_eq!(save.last_map(), 5);
+    save.set_x_block_coord(7);
+    save.set_y_block_coord(9);
+    assert_eq!(save.x_block_coord(), 7);
+    assert_eq!(save.y_block_coord(), 9);
+}

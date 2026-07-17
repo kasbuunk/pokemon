@@ -274,3 +274,45 @@ proptest! {
         }
     }
 }
+
+// ---- mutation hardening (issue #33): boundary behavior of set_bytes
+// and the tail/SRAM edge ----
+
+#[test]
+fn set_bytes_accepts_the_exact_boundaries() {
+    let mut save = SaveFile::from_bytes(vec![0u8; 0x8009]).expect("valid length");
+    let len = 0x8009;
+    save.set_bytes(len, &[]).expect("empty write at the end");
+    assert!(!save.is_edited(), "nothing was written");
+    save.set_bytes(len - 2, &[9, 9])
+        .expect("exact fit at the end");
+    assert_eq!(&save.as_bytes()[len - 2..], &[9, 9]);
+}
+
+#[test]
+fn first_tail_byte_writes_verbatim_without_checksum_repair() {
+    // Byte 0x8000 is the first byte past the SRAM image: writing it must
+    // take the tail path (verbatim, no edited flag, checksums kept).
+    let mut save = SaveFile::from_bytes(vec![0u8; 0x8009]).expect("valid length");
+    save.set_bytes(offsets::SRAM_SIZE, &[7]).expect("in range");
+    assert!(!save.is_edited(), "tail writes bypass the edited flag");
+    let mut expected = vec![0u8; 0x8009];
+    expected[offsets::SRAM_SIZE] = 7;
+    assert_eq!(save.to_bytes(), expected, "only the tail byte changed");
+}
+
+#[test]
+fn changed_ranges_merges_only_adjacent_tail_growth() {
+    // A change run that ends exactly at the common length merges with
+    // the appended tail; a gap keeps them separate.
+    assert_eq!(
+        changed_ranges(&[1, 2, 3], &[1, 2, 9, 8]),
+        vec![2..4],
+        "adjacent run merges with the tail"
+    );
+    assert_eq!(
+        changed_ranges(&[1, 2, 3], &[9, 2, 3, 4]),
+        vec![0..1, 3..4],
+        "non-adjacent run stays separate from the tail"
+    );
+}

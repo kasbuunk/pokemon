@@ -109,3 +109,14 @@ fn complete_dex_sets_all_151_owned_and_seen() {
     assert_eq!(b[offsets::POKEDEX_SEEN + offsets::POKEDEX_LEN - 1], 0x7F);
     assert!(save.is_edited());
 }
+
+#[test]
+fn stray_152nd_bit_never_counts() {
+    // Mutation hardening (issue #33): bit 151 (byte 18, mask 0x80) is
+    // outside the 151-species dex and must be filtered from the counts.
+    let mut save = blank();
+    save.set_dex_owned(1, true);
+    save.set_byte(offsets::POKEDEX_OWNED + 18, 0x80)
+        .expect("in range");
+    assert_eq!(save.owned_count(), 1);
+}
