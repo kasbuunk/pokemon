@@ -343,3 +343,23 @@ fn unknown_item_id_span_points_at_that_entry() {
         "span names entry 1's id byte"
     );
 }
+
+#[test]
+fn zero_quantity_reads_the_qty_byte_not_the_id() {
+    // Entry 1: valid id, quantity 0 — W-ITEMS-QTY-ZERO must fire (the
+    // check reads the qty byte at `at + 1`, not the id byte).
+    let mut save = blank();
+    save.bag_items_mut().add(POTION, 1).expect("room");
+    save.bag_items_mut().add(POTION, 1).expect("room");
+    save.set_byte(offsets::BAG_ITEMS + 3, 0).expect("in range");
+    let diags = save.diagnostics();
+    let diag = diags
+        .iter()
+        .find(|d| d.code == "W-ITEMS-QTY-ZERO")
+        .expect("zero quantity flagged");
+    assert_eq!(
+        diag.span,
+        Some(offsets::BAG_ITEMS + 3..offsets::BAG_ITEMS + 4),
+        "span names entry 1's quantity byte"
+    );
+}

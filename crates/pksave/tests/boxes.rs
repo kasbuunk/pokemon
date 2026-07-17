@@ -905,3 +905,74 @@ fn box_is_empty_reports_both_polarities_via_view_and_mut() {
     assert!(!save.box_(0).is_empty());
     assert!(!save.box_mut(0).is_empty());
 }
+
+#[test]
+fn box_swap_between_nonzero_slots_moves_the_species_list() {
+    // swap(1, 2) rather than swap(0, _): at slot 0 the species-list
+    // index arithmetic is a fixed point of +/- mutations.
+    let mut save = SaveFile::new_empty(GameVariant::RedBlue);
+    save.set_current_box_number(1);
+    {
+        let mut b = save.box_mut(0);
+        for dex in [1, 4, 7] {
+            b.add(&make_box_mon(dex, 9), "RED", "X").expect("room");
+        }
+        b.swap(1, 2);
+    }
+    assert_eq!(
+        save.box_(0).species_list(),
+        &[DEX_TO_INDEX[1], DEX_TO_INDEX[7], DEX_TO_INDEX[4]]
+    );
+}
+
+#[test]
+fn swap_party_box_updates_both_species_lists() {
+    let mut save = SaveFile::new_empty(GameVariant::RedBlue);
+    save.set_current_box_number(1);
+    for dex in [1, 4, 7] {
+        save.party_mut()
+            .add(&make_party_mon(dex, 8), "ASH", "P")
+            .expect("room");
+    }
+    for dex in [25, 39, 52] {
+        save.box_mut(0)
+            .add(&make_box_mon(dex, 21), "GARY", "B")
+            .expect("room");
+    }
+    save.swap_party_box(2, 0, 2).expect("both occupied");
+    assert_eq!(
+        save.party().species_list(),
+        &[DEX_TO_INDEX[1], DEX_TO_INDEX[4], DEX_TO_INDEX[52]],
+        "party species list entry 2 follows the swap"
+    );
+    assert_eq!(
+        save.box_(0).species_list(),
+        &[DEX_TO_INDEX[25], DEX_TO_INDEX[39], DEX_TO_INDEX[7]],
+        "box species list entry 2 follows the swap"
+    );
+}
+
+#[test]
+fn withdraw_into_a_one_mon_party_repacks_the_species_list() {
+    // At party index 2 the tail-fill start `list + i + 2` is a fixed
+    // point of the +/* mutation (2+2 == 2*2); index 1 is not.
+    let mut save = SaveFile::new_empty(GameVariant::RedBlue);
+    save.set_current_box_number(1);
+    save.party_mut()
+        .add(&make_party_mon(1, 8), "ASH", "P1")
+        .expect("room");
+    save.box_mut(0)
+        .add(&make_box_mon(7, 31), "OTIS", "BOXY")
+        .expect("room");
+    save.withdraw(0, 0).expect("party has room");
+
+    let bytes = save.to_bytes();
+    let list = offsets::PARTY + 1;
+    assert_eq!(bytes[offsets::PARTY], 2, "party count byte");
+    assert_eq!(bytes[list + 1], DEX_TO_INDEX[7], "species list entry 1");
+    assert_eq!(bytes[list + 2], 0xFF, "species list sentinel");
+    assert!(
+        bytes[list + 3..list + 7].iter().all(|&b| b == 0),
+        "species list tail is zero-filled"
+    );
+}
