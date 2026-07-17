@@ -33,7 +33,20 @@ formerly known as *pksave*.
 
 ## Screenshots
 
-<!-- TODO: add screenshots (welcome screen, Pokémon storage screen, hex view). -->
+**Pokémon storage** — party strip, box tabs and grid, drag-and-drop moves, and
+the detail editor panel:
+
+![Pokémon storage screen with a populated party and box](docs/screenshots/storage.png)
+
+**Hex view** — the raw save with every region color-coded (party, current box
+working copy, box banks, checksum bytes), offset jump and in-place editing:
+
+![Hex view of the save file, jumped to the party block](docs/screenshots/hex.png)
+
+**Welcome screen** — open a file, start a new save, or just drag a `.sav`
+anywhere into the window:
+
+![Welcome screen](docs/screenshots/welcome.png)
 
 ## FAQ
 
