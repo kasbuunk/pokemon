@@ -163,19 +163,40 @@ fn right_click_opens_the_context_menu_and_selects() {
 }
 
 #[test]
+fn party_strip_and_grid_fit_inside_the_center_column() {
+    // Issue #47: the party strip's old 96pt minimum cell width (7 cells
+    // ≈ 732pt) expanded the center column's layout width past its clip,
+    // so the grid's right columns rendered under the detail panel and
+    // never saw the pointer. The strip and the grid must both end left
+    // of the detail panel.
+    for size in [egui::vec2(1100.0, 740.0), egui::vec2(640.0, 400.0)] {
+        let harness = storage_harness(size);
+        let panel = egui::PanelState::load(&harness.ctx, egui::Id::new("storage_detail"))
+            .expect("side-by-side detail panel");
+        let panel_left = panel.outer_rect.left();
+        for label in ["Empty daycare", "Empty box 1 slot 4"] {
+            let right = harness.get_by_label(label).rect().right();
+            assert!(
+                right <= panel_left + 0.5,
+                "{label} (right edge {right}) overflows under the detail \
+                 panel (left edge {panel_left}) at {size:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn drag_and_drop_still_deposits_a_mon() {
     // The cells now sense click+drag themselves (no separate drag-only
-    // handle); a real multi-frame drag must still move the mon.
+    // handle); a real multi-frame drag must still move the mon. The
+    // target is the grid's rightmost column, which used to be clipped
+    // under the detail panel and dropped these events (issue #47).
     let mut harness = storage_harness(egui::vec2(1100.0, 740.0));
     harness.get_by_label("✚ party").click();
     harness.run();
 
-    // Target the first box cell: at this viewport the grid overflows
-    // under the detail panel and clipped cells never see the pointer
-    // (a pre-existing layout bug, tracked separately), so pick a cell
-    // that is fully visible.
     let from = harness.get_by_label_contains("BULBASAUR").rect().center();
-    let to = harness.get_by_label("Empty box 1 slot 1").rect().center();
+    let to = harness.get_by_label("Empty box 1 slot 4").rect().center();
 
     harness.event(egui::Event::PointerMoved(from));
     harness.step();
