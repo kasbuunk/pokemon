@@ -255,8 +255,12 @@ fn party_strip(ui: &mut egui::Ui, doc: &Doc, state: &mut StorageState, queued: &
     // 6 party cells + a separator gap + the daycare cell.
     let cells = (offsets::PARTY_CAPACITY + 1) as f32;
     let extra_gap = 12.0;
+    // The lower clamp must keep the whole strip inside [`CENTER_MIN_WIDTH`]:
+    // a strip wider than the column expands this `Ui`'s layout width, so
+    // the box grid below lays out under the detail panel and its clipped
+    // right columns stop taking clicks and drops (issue #47).
     let slot_w =
-        ((ui.available_width() - spacing * (cells - 1.0) - extra_gap) / cells).clamp(96.0, 190.0);
+        ((ui.available_width() - spacing * (cells - 1.0) - extra_gap) / cells).clamp(40.0, 190.0);
     let size = egui::vec2(slot_w, 44.0);
 
     ui.horizontal(|ui| {
