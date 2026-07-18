@@ -32,6 +32,11 @@ const CENTER_MIN_WIDTH: f32 = 380.0;
 const DETAIL_MIN_WIDTH: f32 = 240.0;
 /// Preferred detail-panel width when there is room for it.
 const DETAIL_DEFAULT_WIDTH: f32 = 460.0;
+/// Below this center-column height or width the chrome compacts (numbered
+/// box tabs on one row, tighter grid floor) so the whole column — action
+/// row included — fits the viewport without scrolling (issue #43).
+const COMPACT_MAX_HEIGHT: f32 = 430.0;
+const COMPACT_MAX_WIDTH: f32 = 480.0;
 
 pub struct StorageState {
     pub selected: Option<SlotId>,
@@ -98,11 +103,13 @@ pub fn ui(ui: &mut egui::Ui, doc: &mut Doc, state: &mut StorageState) {
 
     // ---- center: header, party strip, tabs, box grid, action row ----
     egui::CentralPanel::default().show(ui, |ui| {
+        let compact =
+            ui.available_height() < COMPACT_MAX_HEIGHT || ui.available_width() < COMPACT_MAX_WIDTH;
         header(ui, doc, state, &mut touched);
         ui.add_space(6.0);
         party_strip(ui, doc, state, &mut queued);
         ui.add_space(8.0);
-        box_tabs(ui, doc, state, &mut queued);
+        box_tabs(ui, doc, state, &mut queued, compact);
         ui.add_space(4.0);
 
         // Reserve room for the action row below the grid.
@@ -297,21 +304,52 @@ fn party_strip(ui: &mut egui::Ui, doc: &Doc, state: &mut StorageState, queued: &
 }
 
 /// The 12 box tabs; every tab is also a drop target ("move to box N").
-fn box_tabs(ui: &mut egui::Ui, doc: &Doc, state: &mut StorageState, queued: &mut Vec<Action>) {
+/// Compact mode fits all tabs on one row — full labels wrap to three
+/// rows at the minimum center width and overflow short viewports.
+fn box_tabs(
+    ui: &mut egui::Ui,
+    doc: &Doc,
+    state: &mut StorageState,
+    queued: &mut Vec<Action>,
+    compact: bool,
+) {
     let current = usize::from(doc.save.current_box_number());
     ui.horizontal_wrapped(|ui| {
+        if compact {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            ui.weak("Box");
+        }
         for n in 0..offsets::NUM_BOXES {
             let star = if n == current { " ★" } else { "" };
             let count = doc.save.box_(n).len();
-            let label = format!("Box {}{star} ({count})", n + 1);
-            let response = ui.selectable_label(state.tab == n, label);
+            let label = if compact {
+                format!("{}{star}", n + 1)
+            } else {
+                format!("Box {}{star} ({count})", n + 1)
+            };
+            let mut response = ui.selectable_label(state.tab == n, label);
+            if compact {
+                // The dropped count — and the live-box note that compact
+                // mode has no room for below the strip — move up here.
+                let live = if doc.save.box_is_live(n) {
+                    "\nThis is the current box: edits go to the live working copy, \
+                     exactly as the game reads it."
+                } else {
+                    ""
+                };
+                response = response.on_hover_text(format!(
+                    "Box {} ({count} / {}){live}",
+                    n + 1,
+                    offsets::MONS_PER_BOX
+                ));
+            }
             if response.clicked() && state.tab != n {
                 state.tab = n;
             }
             slots::handle_drop_target(ui, &response, doc, DropTarget::BoxTab(n), queued);
         }
     });
-    if doc.save.box_is_live(state.tab) {
+    if !compact && doc.save.box_is_live(state.tab) {
         ui.weak(
             "This is the current box: edits go to the live working copy, exactly as the \
              game reads it.",
@@ -334,7 +372,9 @@ fn box_grid(
 
     let spacing = ui.spacing().item_spacing;
     let slot_w = (ui.available_width() - spacing.x * (COLS as f32 - 1.0)) / COLS as f32;
-    let slot_h = ((height - spacing.y * (ROWS as f32 - 1.0)) / ROWS as f32).clamp(40.0, 84.0);
+    // The floor is the two text lines plus the cell's 4pt inner margins:
+    // anything higher pushes the action row off short viewports.
+    let slot_h = ((height - spacing.y * (ROWS as f32 - 1.0)) / ROWS as f32).clamp(34.0, 84.0);
     let size = egui::vec2(slot_w, slot_h);
 
     let n = state.tab;

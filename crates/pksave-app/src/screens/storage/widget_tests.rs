@@ -89,9 +89,16 @@ fn narrow_viewport_keeps_the_grid_width() {
 fn narrow_viewport_keeps_the_action_row_reachable() {
     // At the minimum center width the two action rows must stay inside
     // the center column as real click targets (a single unwrapped row
-    // used to overflow under the detail panel). 480pt of height: below
-    // ~440 the center column overflows vertically (tracked separately).
-    let mut harness = storage_harness(egui::vec2(640.0, 480.0));
+    // used to overflow under the detail panel), and at 640×400 — the
+    // issue #43 repro size — the compacted column must also keep them
+    // above the bottom edge of the viewport.
+    let size = egui::vec2(640.0, 400.0);
+    let mut harness = storage_harness(size);
+    let rect = harness.get_by_label("✚ party").rect();
+    assert!(
+        rect.max.y <= size.y && rect.max.x <= size.x,
+        "the action row ({rect:?}) must lie inside the {size:?} viewport"
+    );
     harness.get_by_label("✚ party").click();
     harness.run();
     assert_eq!(harness.state().0.save.party().len(), 1);
