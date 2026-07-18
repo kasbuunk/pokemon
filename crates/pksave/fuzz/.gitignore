@@ -1,4 +1,5 @@
 target
-corpus
+# the minimized save_walk corpus is committed (issue #34)
+!corpus
 artifacts
 coverage

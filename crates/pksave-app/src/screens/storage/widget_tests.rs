@@ -203,14 +203,3 @@ fn drag_and_drop_still_deposits_a_mon() {
     assert_eq!(doc.save.party().len(), 0, "drag must leave the party");
     assert_eq!(doc.save.box_(0).len(), 1, "drop must land in the box");
 }
-
-#[test]
-fn dbg_box_tab() {
-    let mut harness = storage_harness(egui::vec2(1100.0, 740.0));
-    harness.get_by_label("Box 2 (0)").click();
-    harness.run();
-    let node = harness.get_by_label("✚ this box");
-    println!("button rect: {:?}", node.rect());
-    let node2 = harness.get_by_label("✚ party");
-    println!("party button rect: {:?}", node2.rect());
-}
