@@ -48,20 +48,33 @@ pub enum Action {
 }
 
 /// Paint one cell: selection-aware frame plus up to two lines of text.
-/// Returns the click response for the whole cell.
+/// Returns the response for the whole cell, sensing `sense`.
 fn draw_cell(
     ui: &mut egui::Ui,
     size: egui::Vec2,
+    sense: egui::Sense,
     info: Option<&SlotInfo>,
     slot_no: usize,
     selected: bool,
 ) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
-    if !ui.is_rect_visible(rect) {
-        return response;
+    let (rect, response) = ui.allocate_exact_size(size, sense);
+    if ui.is_rect_visible(rect) {
+        paint_cell(ui, ui.painter(), rect, &response, info, slot_no, selected);
     }
-    let visuals = ui.style().interact_selectable(&response, selected);
-    let painter = ui.painter();
+    response
+}
+
+/// Paint a cell into `rect` with `painter`, styled after `response`.
+fn paint_cell(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    response: &egui::Response,
+    info: Option<&SlotInfo>,
+    slot_no: usize,
+    selected: bool,
+) {
+    let visuals = ui.style().interact_selectable(response, selected);
 
     let (fill, stroke) = if info.is_some() || selected || response.hovered() {
         (visuals.bg_fill, visuals.bg_stroke)
@@ -131,7 +144,6 @@ fn draw_cell(
             );
         }
     }
-    response
 }
 
 /// Species label without the `#NNN ` dex prefix, for the tight cells.
@@ -195,14 +207,39 @@ pub fn slot_cell(
     };
 
     let response = if let Some(info) = &info {
-        let inner = ui.dnd_drag_source(id, MonDragPayload(slot), |ui| {
-            draw_cell(ui, size, Some(info), slot_no, *selected == Some(slot))
-        });
-        // Union of the drag handle and the inner click response: clicks,
-        // context menu and hover all keep working on a drag source.
-        inner.inner | inner.response
+        // One widget senses both click and drag. A separate drag-only
+        // handle on top (`Ui::dnd_drag_source`) starts dragging on the
+        // press itself and swallows every click and right-click.
+        let is_selected = *selected == Some(slot);
+        let response = draw_cell(
+            ui,
+            size,
+            egui::Sense::click_and_drag(),
+            Some(info),
+            slot_no,
+            is_selected,
+        );
+        response.dnd_set_drag_payload(MonDragPayload(slot));
+        if response.dragged() {
+            if let Some(pointer) = ui.ctx().pointer_interact_pos() {
+                // A ghost of the cell follows the pointer. Paint only:
+                // a widget allocated here would shadow the drop
+                // target underneath.
+                let layer = egui::LayerId::new(egui::Order::Tooltip, id);
+                paint_cell(
+                    ui,
+                    &ui.ctx().layer_painter(layer),
+                    egui::Rect::from_center_size(pointer, size),
+                    &response,
+                    Some(info),
+                    slot_no,
+                    is_selected,
+                );
+            }
+        }
+        response
     } else {
-        draw_cell(ui, size, None, slot_no, false)
+        draw_cell(ui, size, egui::Sense::click(), None, slot_no, false)
     };
 
     if response.clicked() && info.is_some() {

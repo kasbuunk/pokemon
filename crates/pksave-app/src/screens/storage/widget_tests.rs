@@ -109,3 +109,126 @@ fn dbg_box_tab() {
     let node2 = harness.get_by_label("✚ party");
     println!("party button rect: {:?}", node2.rect());
 }
+
+type StorageHarness = Harness<'static, (Doc, StorageState)>;
+
+fn pointer_button(
+    harness: &mut StorageHarness,
+    pos: egui::Pos2,
+    button: egui::PointerButton,
+    pressed: bool,
+) {
+    harness.event(egui::Event::PointerButton {
+        pos,
+        button,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.run();
+}
+
+/// A real pointer click, press and release on separate frames like any
+/// physical click (an accesskit click would bypass the hit test).
+fn pointer_click(harness: &mut StorageHarness, pos: egui::Pos2, button: egui::PointerButton) {
+    harness.event(egui::Event::PointerMoved(pos));
+    harness.run();
+    pointer_button(harness, pos, button, true);
+    pointer_button(harness, pos, button, false);
+}
+
+/// Center of party cell `i`: the cells sit in a row right under the
+/// "Party n / 6" heading.
+fn party_cell(harness: &StorageHarness, i: usize) -> egui::Pos2 {
+    let heading = harness
+        .query_all_by_value(&format!(
+            "Party {} / 6",
+            harness.state().0.save.party().len()
+        ))
+        .next()
+        .expect("party heading")
+        .rect();
+    // 96pt is the minimum cell width, which the 1100pt harness yields.
+    let pitch = 96.0 + harness.ctx.global_style().spacing.item_spacing.x;
+    heading.left_bottom() + egui::vec2(48.0 + pitch * i as f32, 24.0)
+}
+
+/// A storage screen with two party mons; the second one is selected.
+fn two_mon_harness() -> StorageHarness {
+    let mut harness = storage_harness(egui::vec2(1100.0, 740.0));
+    for _ in 0..2 {
+        harness.get_by_label("✚ party").click();
+        harness.run();
+    }
+    assert_eq!(harness.state().1.selected, Some(SlotId::Party(1)));
+    harness
+}
+
+#[test]
+fn clicking_an_occupied_cell_selects_it() {
+    let mut harness = two_mon_harness();
+    let cell = party_cell(&harness, 0);
+    pointer_click(&mut harness, cell, egui::PointerButton::Primary);
+    assert_eq!(harness.state().1.selected, Some(SlotId::Party(0)));
+}
+
+#[test]
+fn right_clicking_an_occupied_cell_opens_its_menu() {
+    let mut harness = two_mon_harness();
+    assert_eq!(harness.query_all_by_label("Move to daycare").count(), 0);
+    let cell = party_cell(&harness, 0);
+    pointer_click(&mut harness, cell, egui::PointerButton::Secondary);
+    harness.run();
+    assert_eq!(harness.query_all_by_label("Move to daycare").count(), 1);
+}
+
+#[test]
+fn dragging_a_cell_onto_another_still_reorders_the_party() {
+    let mut harness = two_mon_harness();
+    harness.state_mut().0.save.party_mut().set_species(1, 0x16);
+    let (from, to) = (party_cell(&harness, 1), party_cell(&harness, 0));
+    harness.event(egui::Event::PointerMoved(from));
+    harness.run();
+    pointer_button(&mut harness, from, egui::PointerButton::Primary, true);
+    for step in 1..=4 {
+        harness.event(egui::Event::PointerMoved(from.lerp(to, step as f32 / 4.0)));
+        harness.run();
+    }
+    pointer_button(&mut harness, to, egui::PointerButton::Primary, false);
+    harness.run();
+    use pksave::gen1::pokemon::MonView;
+    assert_eq!(
+        harness.state().0.save.party().mon(0).species(),
+        0x16,
+        "dragged mon lands in slot 1"
+    );
+}
+
+#[test]
+fn picking_a_move_in_the_editor_sets_it_with_full_pp() {
+    let mut harness = storage_harness(egui::vec2(1100.0, 740.0));
+    harness.get_by_label("✚ party").click();
+    harness.run();
+
+    let combo = harness
+        .query_all_by_value("— none —")
+        .next()
+        .expect("first move slot")
+        .rect()
+        .center();
+    pointer_click(&mut harness, combo, egui::PointerButton::Primary);
+    harness.event(egui::Event::Text("hyper".to_owned()));
+    harness.run();
+    let option = harness
+        .query_all_by_label("HYPER BEAM (5 PP)")
+        .next()
+        .expect("filtered option")
+        .rect()
+        .center();
+    pointer_click(&mut harness, option, egui::PointerButton::Primary);
+
+    use pksave::gen1::pokemon::MonView;
+    let (doc, _) = harness.state();
+    let party = doc.save.party();
+    assert_eq!(party.mon(0).moves()[0], 0x3F);
+    assert_eq!(party.mon(0).pp()[0], 5);
+}
